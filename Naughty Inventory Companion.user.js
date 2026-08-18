@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.1.1
+// @version      1.1.2
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -20,7 +20,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.1";
+    const VERSION = "1.1.2";
     const BASE_URL = "https://api.torn.com/v2/";
     const RUNTIME = (() => {
         const userAgent = navigator.userAgent || "";
@@ -37,8 +37,12 @@
         "material", "collectible"
     ];
     const LOANABLE_CATEGORIES = new Set(["temporary", "melee", "primary", "secondary", "tool", "defensive"]);
-    // The desktop detail grid needs roughly 664px after its columns, gaps, and nested padding.
+    // The desktop parent and detail grids need roughly 664px after their columns, gaps, and nested padding.
     const COMPACT_DETAIL_WIDTH = 680;
+    const PARENT_SORT_OPTIONS = [
+        ["category", "Category"], ["distinctItems", "Items"], ["quantity", "Quantity"],
+        ["value", "Category Value"], ["loaned", "Loaned"]
+    ];
     const ITEM_SORT_OPTIONS = [
         ["name", "Name"], ["quantity", "Quantity"], ["price", "Unit Value"], ["total", "Item Total"],
         ["bonusText", "Bonus / Perks"], ["modsText", "Mods"], ["factionOwned", "Loan Status"]
@@ -299,6 +303,12 @@
             ITEM_SORT_OPTIONS.map(([key, label]) => "<option value='" + key + "'" + (state.itemSort.key === key ? " selected" : "") + ">" + label + "</option>").join("") +
             "</select><button data-action='flip-item-sort' title='Reverse item sort order'>" + direction + "</button></div>";
     }
+    function compactParentSortControls() {
+        const direction = state.parentSort.direction === "asc" ? "↑ Asc" : "↓ Desc";
+        return "<div class='nic-compact-parent-sort'><span>Sort categories</span><select data-parent-sort-select aria-label='Sort categories by'>" +
+            PARENT_SORT_OPTIONS.map(([key, label]) => "<option value='" + key + "'" + (state.parentSort.key === key ? " selected" : "") + ">" + label + "</option>").join("") +
+            "</select><button data-action='flip-parent-sort' title='Reverse category sort order'>" + direction + "</button></div>";
+    }
     function loanStatus(item, category) {
         if (!LOANABLE_CATEGORIES.has(category)) return "<span class='nic-muted'>—</span>";
         return item.factionOwned
@@ -344,7 +354,7 @@
             failures +
             "<div class='nic-toolbar'><input id='nic-filter' value='" + escapeHtml(state.filter) + "' placeholder='Filter categories or item names'><span>" +
             (inventory.syncedAt ? "Price snapshot " + formatRelative(inventory.syncedAt) : "No snapshot") + "</span></div>" +
-            "<section class='nic-category-table'><div class='nic-parent-header'>" +
+            "<section class='nic-category-table'>" + compactParentSortControls() + "<div class='nic-parent-header'>" +
             parentHeader("Category", "category") + parentHeader("Items", "distinctItems") + parentHeader("Qty", "quantity") +
             parentHeader("Category Value", "value") + parentHeader("Loaned", "loaned") + "</div>" +
             (groups.length ? groups.map((group) => {
@@ -565,6 +575,16 @@
             saveDashboardState();
             render();
         });
+        content.querySelectorAll("[data-parent-sort-select]").forEach((select) => select.addEventListener("change", (event) => {
+            state.parentSort = { key: event.target.value, direction: state.parentSort.direction };
+            saveDashboardState();
+            render();
+        }));
+        content.querySelectorAll("[data-action='flip-parent-sort']").forEach((button) => button.addEventListener("click", () => {
+            state.parentSort = { key: state.parentSort.key, direction: state.parentSort.direction === "asc" ? "desc" : "asc" };
+            saveDashboardState();
+            render();
+        }));
         content.querySelectorAll("[data-item-sort]").forEach((button) => button.onclick = () => {
             const key = button.dataset.itemSort;
             state.itemSort = { key, direction: state.itemSort.key === key && state.itemSort.direction === "asc" ? "desc" : "asc" };
@@ -744,7 +764,7 @@
                 #nic-wrapper[data-theme='light'] .nic-category-row:hover{background:#c8d6e3}
                 .nic-category-name{text-align:left;font-weight:800;text-transform:capitalize}.nic-caret{display:inline-block;width:16px;color:#8eb5e5;font-size:16px;line-height:10px}.nic-money{text-align:right}.nic-total{color:#89dda2;font-weight:800}
                 .nic-nested{padding:0 7px 8px;background:rgba(10,16,26,.58)}#nic-wrapper[data-theme='light'] .nic-nested{background:#d2dde8}
-                .nic-compact-sort{display:none;align-items:center;gap:6px;padding:7px 5px;border-bottom:1px solid #40516d;color:#aebed3;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.035em}.nic-compact-sort select{min-width:0;flex:1 1 120px;height:30px;border:1px solid #526986;border-radius:7px;background:#111b2a;color:#f4f8ff;padding:4px 7px;font:inherit;text-transform:none;letter-spacing:normal}.nic-compact-sort button{min-width:62px;min-height:30px;padding:4px 6px;font-size:9px;white-space:nowrap}#nic-wrapper[data-theme='light'] .nic-compact-sort{color:#475d76;border-color:#9badbe}#nic-wrapper[data-theme='light'] .nic-compact-sort select{background:#e6edf4;color:#17263b;border-color:#8397ae}
+                .nic-compact-sort,.nic-compact-parent-sort{display:none;align-items:center;gap:6px;padding:7px 5px;border-bottom:1px solid #40516d;color:#aebed3;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.035em}.nic-compact-parent-sort{position:sticky;top:0;z-index:3;background:#17253a}.nic-compact-sort select,.nic-compact-parent-sort select{min-width:0;flex:1 1 120px;height:30px;border:1px solid #526986;border-radius:7px;background:#111b2a;color:#f4f8ff;padding:4px 7px;font:inherit;text-transform:none;letter-spacing:normal}.nic-compact-sort button,.nic-compact-parent-sort button{min-width:62px;min-height:30px;padding:4px 6px;font-size:9px;white-space:nowrap}#nic-wrapper[data-theme='light'] .nic-compact-sort,#nic-wrapper[data-theme='light'] .nic-compact-parent-sort{color:#475d76;border-color:#9badbe}#nic-wrapper[data-theme='light'] .nic-compact-sort select,#nic-wrapper[data-theme='light'] .nic-compact-parent-sort select{background:#e6edf4;color:#17263b;border-color:#8397ae}#nic-wrapper[data-theme='light'] .nic-compact-parent-sort{background:#d5e0eb}
                 .nic-item-header,.nic-item-row{display:grid;grid-template-columns:minmax(128px,1.7fr) minmax(42px,.5fr) minmax(80px,.95fr) minmax(84px,1fr) minmax(110px,1.45fr) minmax(92px,1.2fr) minmax(58px,.7fr);gap:6px;align-items:center}
                 .nic-item-header{padding:8px 5px 5px;color:#aebed3;border-bottom:1px solid #40516d}.nic-item-header .nic-nested-button:not(:first-child){text-align:right}
                 .nic-item-row{padding:8px 5px;border-bottom:1px solid #202d40;font-size:10px;color:#d8e3f0}.nic-item-row:last-child{border-bottom:0}.nic-item-row>div:not(:first-child){text-align:right}
@@ -756,7 +776,16 @@
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}
                 #nic-wrapper[data-runtime='tornpda'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='tornpda'] button{min-height:38px}#nic-wrapper[data-runtime='tornpda'] #nic-body{padding:8px}#nic-wrapper[data-runtime='tornpda'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='tornpda'] .nic-summary-card{padding:8px}
-                #nic-wrapper[data-compact='true'] .nic-compact-sort{display:flex}#nic-wrapper[data-compact='true'] .nic-item-header{display:none}#nic-wrapper[data-compact='true'] .nic-item-row{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:0!important;padding:9px 7px;font-size:10px}#nic-wrapper[data-compact='true'] .nic-item-row>div:first-child{grid-column:auto;margin:0 0 5px;padding:0 0 6px;border-bottom:1px solid #283950}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child){display:flex;grid-column:auto;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;padding:4px 0;text-align:right!important}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:9px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-compact='true'] .nic-detail-value{min-width:0;overflow-wrap:anywhere;text-align:right}#nic-wrapper[data-compact='true'] .nic-perks,#nic-wrapper[data-compact='true'] .nic-mods{align-items:flex-start!important;line-height:1.35}#nic-wrapper[data-compact='true'] .nic-perks .nic-detail-value,#nic-wrapper[data-compact='true'] .nic-mods .nic-detail-value{padding-top:1px}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}#nic-wrapper[data-compact='true'][data-theme='light'] .nic-item-row>div:first-child{border-color:#b1c0cf}
+                #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
+                #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
+                #nic-wrapper[data-compact='true'] .nic-category-row{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:5px 12px!important;min-height:0;padding:9px 10px;font-size:10px;text-align:left}
+                #nic-wrapper[data-compact='true'] .nic-category-row>div:first-child{grid-column:1/-1;margin:0 0 2px;padding:0 0 6px;border-bottom:1px solid #283950;overflow:visible;text-overflow:clip;white-space:normal}
+                #nic-wrapper[data-compact='true'] .nic-category-row>div:not(:first-child){display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;padding:3px 0;text-align:right}
+                #nic-wrapper[data-compact='true'] .nic-category-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:8px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}
+                #nic-wrapper[data-compact='true'] .nic-category-row>div:nth-child(2):before{content:'Items'}#nic-wrapper[data-compact='true'] .nic-category-row>div:nth-child(3):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-category-row>div:nth-child(4):before{content:'Category value'}#nic-wrapper[data-compact='true'] .nic-category-row>div:nth-child(5):before{content:'Loaned'}
+                #nic-wrapper[data-compact='true'] .nic-category-row .nic-total{min-width:0;overflow-wrap:anywhere}
+                #nic-wrapper[data-compact='true'] .nic-item-header{display:none}
+                #nic-wrapper[data-compact='true'] .nic-item-row{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:0!important;padding:9px 7px;font-size:10px}#nic-wrapper[data-compact='true'] .nic-item-row>div:first-child{grid-column:auto;margin:0 0 5px;padding:0 0 6px;border-bottom:1px solid #283950}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child){display:flex;grid-column:auto;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;padding:4px 0;text-align:right!important}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:9px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-compact='true'] .nic-detail-value{min-width:0;overflow-wrap:anywhere;text-align:right}#nic-wrapper[data-compact='true'] .nic-perks,#nic-wrapper[data-compact='true'] .nic-mods{align-items:flex-start!important;line-height:1.35}#nic-wrapper[data-compact='true'] .nic-perks .nic-detail-value,#nic-wrapper[data-compact='true'] .nic-mods .nic-detail-value{padding-top:1px}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}#nic-wrapper[data-compact='true'][data-theme='light'] .nic-category-row>div:first-child,#nic-wrapper[data-compact='true'][data-theme='light'] .nic-item-row>div:first-child{border-color:#b1c0cf}
                 @media(max-width:600px){.nic-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.nic-summary-card span{font-size:8px}.nic-summary-card strong{font-size:14px}.nic-summary-card small{font-size:8px}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(0,1.35fr) minmax(0,.45fr) minmax(0,.5fr) minmax(0,1fr) minmax(0,.45fr);gap:3px;font-size:9px}.nic-parent-header{padding:6px 5px}.nic-category-row{padding:8px 5px}.nic-category-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nic-caret{width:12px}.nic-toolbar{gap:6px}.nic-toolbar span{display:none}.nic-key-row,.nic-setting-actions{display:grid;grid-template-columns:1fr}.nic-key-row input{min-height:38px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(80px,1.25fr) minmax(32px,.4fr) minmax(54px,.7fr) minmax(58px,.75fr) minmax(74px,1fr) minmax(62px,.9fr) minmax(42px,.5fr);gap:3px;font-size:8px}}
             </style>
             <style>#nic-wrapper[data-runtime='tornpda'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='tornpda'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
