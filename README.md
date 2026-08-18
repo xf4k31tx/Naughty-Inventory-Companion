@@ -1,14 +1,63 @@
 # Naughty Inventory Companion
 
-A manual-refresh Torn userscript dedicated to inventory analysis.
+Naughty Inventory Companion is a focused Torn inventory dashboard for Tampermonkey and TornPDA. It turns a manual inventory refresh into a searchable, sortable local snapshot with category totals, current catalog market prices, equipped-item details, and loan status.
 
-Features:
+## What it does
 
-- Official Torn catalog market_price snapshot per manual refresh
-- Per-item and per-category quantity/value totals
-- Equipment bonus/perk and weapon-mod display for equipped items
-- Owned/Loaned status for loanable categories
-- Parent-category and nested-item column sorting
-- Persistent responsive, resizable, edge-snapping window
+- Loads your Torn inventory categories and the official item catalog market-price snapshot on demand.
+- Groups items by category and calculates tracked item count, quantity, category value, and total inventory value.
+- Lets you expand a category to inspect individual items, including quantity, unit value, item total, equipped state, perks/bonuses, weapon mods, and owned or loaned status where applicable.
+- Searches both category and item names.
+- Sorts categories and expanded item rows. Desktop headers are clickable; narrow layouts use compact sort controls so all fields remain usable.
+- Remembers expanded categories, filters, sort choices, theme, panel position, and panel size.
+- Uses a compact responsive layout on TornPDA, including safe-area and active-viewport handling.
 
-No inventory API calls occur automatically.
+## Installation
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or use TornPDA’s userscript support.
+2. Open the [raw userscript](https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js) and install it.
+3. Reload Torn, then open the companion from its launcher.
+4. Open **Settings**, enter your Torn API key, and select **Save Key**.
+5. Return to **Inventory** and select **Refresh** when you want a new snapshot.
+
+## Using the inventory view
+
+The top summary reports tracked items, total inventory value, and visible categories. Use the filter box to narrow the result set by item or category name.
+
+Select a category row to expand it. The expanded table contains:
+
+- **Item** — item name and equipped indicator.
+- **Qty** — owned quantity.
+- **Unit Value** and **Item Total** — calculated from Torn’s current catalog market price.
+- **Bonus / Perks** — equipped-item bonus information when available.
+- **Mods** — equipped weapon modifications when available.
+- **Loaned** — owned versus faction-loaned status for loanable categories.
+
+Sorting is independent for categories and expanded items. Your selections are retained locally.
+
+## Refresh and data behavior
+
+Inventory refresh is intentionally **manual only**. The script does not poll your inventory in the background. A refresh obtains the current inventory data, equipped-item details, and official Torn catalog market prices, then stores the resulting snapshot locally for the dashboard.
+
+Values are an estimate based on the latest loaded catalog market price; they are not a sale guarantee and do not account for market liquidity, listing fees, or item condition.
+
+## Desktop and TornPDA
+
+On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Narrow layouts reflow detailed rows and expose compact sorting controls instead of forcing tiny columns or horizontal clipping.
+
+## Privacy and API keys
+
+Your Torn API key, interface preferences, and cached inventory snapshot are stored in your local userscript storage. The script requests Torn data directly from `api.torn.com`. It does not upload inventory data to a separate service.
+
+Treat API keys as secrets. Revoke and replace any key you believe has been exposed.
+
+## Updating
+
+Reopen the raw userscript URL above in your userscript manager to install the newest version. Existing local settings and cached data are retained unless you explicitly clear the cache.
+
+## Verify from source
+
+```powershell
+node --check "Naughty Inventory Companion.user.js"
+node --test inventory-regression.test.js
+```
