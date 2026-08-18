@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.1.0
+// @version      1.1.1
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -20,7 +20,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.0";
+    const VERSION = "1.1.1";
     const BASE_URL = "https://api.torn.com/v2/";
     const RUNTIME = (() => {
         const userAgent = navigator.userAgent || "";
@@ -37,6 +37,12 @@
         "material", "collectible"
     ];
     const LOANABLE_CATEGORIES = new Set(["temporary", "melee", "primary", "secondary", "tool", "defensive"]);
+    // The desktop detail grid needs roughly 664px after its columns, gaps, and nested padding.
+    const COMPACT_DETAIL_WIDTH = 680;
+    const ITEM_SORT_OPTIONS = [
+        ["name", "Name"], ["quantity", "Quantity"], ["price", "Unit Value"], ["total", "Item Total"],
+        ["bonusText", "Bonus / Perks"], ["modsText", "Mods"], ["factionOwned", "Loan Status"]
+    ];
     const STORAGE = {
         key: "NIC_TORN_API_KEY",
         dashboard: "NIC_DASHBOARD_STATE",
@@ -287,6 +293,12 @@
     function itemHeader(label, key) {
         return "<button class='nic-nested-button' data-item-sort='" + key + "'>" + label + " <span>" + sortIndicator(state.itemSort, key) + "</span></button>";
     }
+    function compactItemSortControls() {
+        const direction = state.itemSort.direction === "asc" ? "↑ Asc" : "↓ Desc";
+        return "<div class='nic-compact-sort'><span>Sort items</span><select data-item-sort-select aria-label='Sort expanded items by'>" +
+            ITEM_SORT_OPTIONS.map(([key, label]) => "<option value='" + key + "'" + (state.itemSort.key === key ? " selected" : "") + ">" + label + "</option>").join("") +
+            "</select><button data-action='flip-item-sort' title='Reverse item sort order'>" + direction + "</button></div>";
+    }
     function loanStatus(item, category) {
         if (!LOANABLE_CATEGORIES.has(category)) return "<span class='nic-muted'>—</span>";
         return item.factionOwned
@@ -298,18 +310,18 @@
             const result = compareValues(a[state.itemSort.key], b[state.itemSort.key], state.itemSort.direction);
             return result || a.name.localeCompare(b.name);
         });
-        return "<div class='nic-nested'><div class='nic-item-header'>" +
+        return "<div class='nic-nested'>" + compactItemSortControls() + "<div class='nic-item-header'>" +
             itemHeader("Item", "name") + itemHeader("Qty", "quantity") + itemHeader("Unit Value", "price") +
             itemHeader("Item Total", "total") + itemHeader("Bonus / Perks", "bonusText") +
             itemHeader("Mods", "modsText") + itemHeader("Loaned", "factionOwned") + "</div>" +
             items.map((item) =>
                 "<article class='nic-item-row'>" +
                 "<div class='nic-item-name'>" + escapeHtml(item.name) + (item.equipped ? "<span class='nic-equipped'>Equipped</span>" : "") + "</div>" +
-                "<div>" + formatInteger(item.quantity) + "</div><div class='nic-money'>" + formatMoney(item.price) + "</div>" +
-                "<div class='nic-money nic-total'>" + formatMoney(item.total) + "</div>" +
-                "<div class='nic-perks'>" + (item.bonusText ? escapeHtml(item.bonusText) : "—") + "</div>" +
-                "<div class='nic-mods'>" + (item.modsText ? escapeHtml(item.modsText) : "—") + "</div>" +
-                "<div>" + loanStatus(item, group.category) + "</div></article>"
+                "<div><span class='nic-detail-value'>" + formatInteger(item.quantity) + "</span></div><div class='nic-money'><span class='nic-detail-value'>" + formatMoney(item.price) + "</span></div>" +
+                "<div class='nic-money nic-total'><span class='nic-detail-value'>" + formatMoney(item.total) + "</span></div>" +
+                "<div class='nic-perks'><span class='nic-detail-value'>" + (item.bonusText ? escapeHtml(item.bonusText) : "—") + "</span></div>" +
+                "<div class='nic-mods'><span class='nic-detail-value'>" + (item.modsText ? escapeHtml(item.modsText) : "—") + "</span></div>" +
+                "<div><span class='nic-detail-value'>" + loanStatus(item, group.category) + "</span></div></article>"
             ).join("") + "</div>";
     }
     function inventoryView() {
@@ -399,6 +411,12 @@
             maxHeight: Math.max(360, window.innerHeight - 20)
         };
     }
+    function applyCompactDetailLayout() {
+        const dashboard = state.dashboard;
+        if (!dashboard) return;
+        const width = dashboard.getBoundingClientRect().width || getViewportMetrics().width;
+        dashboard.dataset.compact = String(!state.isMinimized && width <= COMPACT_DETAIL_WIDTH);
+    }
     function applyPosition(position = state.position) {
         const dashboard = state.dashboard;
         if (!dashboard) return;
@@ -465,6 +483,7 @@
             minimize.style.display = "none";
             handles.forEach((handle) => { handle.style.display = "none"; });
             dashboard.style.cursor = "pointer";
+            dashboard.dataset.compact = "false";
             if (RUNTIME.isTornPDA) {
                 dashboard.style.left = "auto";
                 dashboard.style.top = "calc(env(safe-area-inset-top) + 8px)";
@@ -485,6 +504,7 @@
             handles.forEach((handle) => { handle.style.display = RUNTIME.isTornPDA ? "none" : "block"; });
             dashboard.style.cursor = "";
             applySize();
+            applyCompactDetailLayout();
         }
     }
     function render() {
@@ -492,6 +512,7 @@
         if (!dashboard) return;
         dashboard.dataset.theme = state.theme;
         dashboard.dataset.tab = state.activeTab;
+        applyCompactDetailLayout();
         const content = dashboard.querySelector("#nic-content");
         const activeElement = document.activeElement;
         const filterFocus = activeElement?.id === "nic-filter" ? {
@@ -550,6 +571,16 @@
             saveDashboardState();
             render();
         });
+        content.querySelectorAll("[data-item-sort-select]").forEach((select) => select.addEventListener("change", (event) => {
+            state.itemSort = { key: event.target.value, direction: state.itemSort.direction };
+            saveDashboardState();
+            render();
+        }));
+        content.querySelectorAll("[data-action='flip-item-sort']").forEach((button) => button.addEventListener("click", () => {
+            state.itemSort = { key: state.itemSort.key, direction: state.itemSort.direction === "asc" ? "desc" : "asc" };
+            saveDashboardState();
+            render();
+        }));
         content.querySelectorAll("[data-toggle-category]").forEach((button) => button.onclick = () => {
             const category = button.dataset.toggleCategory;
             if (state.expandedCategories.has(category)) state.expandedCategories.delete(category);
@@ -633,6 +664,7 @@
             dashboard.style.height = height + "px";
             dashboard.style.left = (fromLeft ? resizeStart.rect.right - width : resizeStart.rect.left) + "px";
             dashboard.style.top = (fromTop ? resizeStart.rect.bottom - height : resizeStart.rect.top) + "px";
+            applyCompactDetailLayout();
         });
         document.addEventListener(events.up, (event) => {
             if (!resizing || (usePointerEvents && event.pointerId !== resizePointerId)) return;
@@ -649,6 +681,7 @@
             cancelAnimationFrame(viewportFrame);
             viewportFrame = requestAnimationFrame(() => {
                 applySize();
+                applyCompactDetailLayout();
                 if (!RUNTIME.isTornPDA) saveSize();
             });
         };
@@ -656,6 +689,7 @@
         window.addEventListener("orientationchange", syncViewport);
         window.visualViewport?.addEventListener("resize", syncViewport);
         window.visualViewport?.addEventListener("scroll", syncViewport);
+        if (typeof ResizeObserver === "function") new ResizeObserver(() => applyCompactDetailLayout()).observe(dashboard);
     }
     function initializeDashboard() {
         const dashboard = document.createElement("aside");
@@ -710,6 +744,7 @@
                 #nic-wrapper[data-theme='light'] .nic-category-row:hover{background:#c8d6e3}
                 .nic-category-name{text-align:left;font-weight:800;text-transform:capitalize}.nic-caret{display:inline-block;width:16px;color:#8eb5e5;font-size:16px;line-height:10px}.nic-money{text-align:right}.nic-total{color:#89dda2;font-weight:800}
                 .nic-nested{padding:0 7px 8px;background:rgba(10,16,26,.58)}#nic-wrapper[data-theme='light'] .nic-nested{background:#d2dde8}
+                .nic-compact-sort{display:none;align-items:center;gap:6px;padding:7px 5px;border-bottom:1px solid #40516d;color:#aebed3;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.035em}.nic-compact-sort select{min-width:0;flex:1 1 120px;height:30px;border:1px solid #526986;border-radius:7px;background:#111b2a;color:#f4f8ff;padding:4px 7px;font:inherit;text-transform:none;letter-spacing:normal}.nic-compact-sort button{min-width:62px;min-height:30px;padding:4px 6px;font-size:9px;white-space:nowrap}#nic-wrapper[data-theme='light'] .nic-compact-sort{color:#475d76;border-color:#9badbe}#nic-wrapper[data-theme='light'] .nic-compact-sort select{background:#e6edf4;color:#17263b;border-color:#8397ae}
                 .nic-item-header,.nic-item-row{display:grid;grid-template-columns:minmax(128px,1.7fr) minmax(42px,.5fr) minmax(80px,.95fr) minmax(84px,1fr) minmax(110px,1.45fr) minmax(92px,1.2fr) minmax(58px,.7fr);gap:6px;align-items:center}
                 .nic-item-header{padding:8px 5px 5px;color:#aebed3;border-bottom:1px solid #40516d}.nic-item-header .nic-nested-button:not(:first-child){text-align:right}
                 .nic-item-row{padding:8px 5px;border-bottom:1px solid #202d40;font-size:10px;color:#d8e3f0}.nic-item-row:last-child{border-bottom:0}.nic-item-row>div:not(:first-child){text-align:right}
@@ -721,7 +756,7 @@
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}
                 #nic-wrapper[data-runtime='tornpda'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='tornpda'] button{min-height:38px}#nic-wrapper[data-runtime='tornpda'] #nic-body{padding:8px}#nic-wrapper[data-runtime='tornpda'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='tornpda'] .nic-summary-card{padding:8px}
-                #nic-wrapper[data-runtime='tornpda'] .nic-item-header{display:none}#nic-wrapper[data-runtime='tornpda'] .nic-item-row{grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;padding:9px 5px}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:first-child{grid-column:1/-1;margin-bottom:1px}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:not(:first-child){grid-column:1/-1;display:flex;justify-content:space-between;gap:8px;text-align:left}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:not(:first-child):before{color:#8fa4be;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}
+                #nic-wrapper[data-compact='true'] .nic-compact-sort{display:flex}#nic-wrapper[data-compact='true'] .nic-item-header{display:none}#nic-wrapper[data-compact='true'] .nic-item-row{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:0!important;padding:9px 7px;font-size:10px}#nic-wrapper[data-compact='true'] .nic-item-row>div:first-child{grid-column:auto;margin:0 0 5px;padding:0 0 6px;border-bottom:1px solid #283950}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child){display:flex;grid-column:auto;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;padding:4px 0;text-align:right!important}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:9px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-compact='true'] .nic-detail-value{min-width:0;overflow-wrap:anywhere;text-align:right}#nic-wrapper[data-compact='true'] .nic-perks,#nic-wrapper[data-compact='true'] .nic-mods{align-items:flex-start!important;line-height:1.35}#nic-wrapper[data-compact='true'] .nic-perks .nic-detail-value,#nic-wrapper[data-compact='true'] .nic-mods .nic-detail-value{padding-top:1px}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}#nic-wrapper[data-compact='true'][data-theme='light'] .nic-item-row>div:first-child{border-color:#b1c0cf}
                 @media(max-width:600px){.nic-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.nic-summary-card span{font-size:8px}.nic-summary-card strong{font-size:14px}.nic-summary-card small{font-size:8px}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(0,1.35fr) minmax(0,.45fr) minmax(0,.5fr) minmax(0,1fr) minmax(0,.45fr);gap:3px;font-size:9px}.nic-parent-header{padding:6px 5px}.nic-category-row{padding:8px 5px}.nic-category-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nic-caret{width:12px}.nic-toolbar{gap:6px}.nic-toolbar span{display:none}.nic-key-row,.nic-setting-actions{display:grid;grid-template-columns:1fr}.nic-key-row input{min-height:38px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(80px,1.25fr) minmax(32px,.4fr) minmax(54px,.7fr) minmax(58px,.75fr) minmax(74px,1fr) minmax(62px,.9fr) minmax(42px,.5fr);gap:3px;font-size:8px}}
             </style>
             <style>#nic-wrapper[data-runtime='tornpda'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='tornpda'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
