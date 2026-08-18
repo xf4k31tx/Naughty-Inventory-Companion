@@ -4,7 +4,9 @@
 // @version      1.0.0
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
-// @match        https://www.torn.com/*
+// @match        https://www.torn.com/item.php*
+// @match        https://www.torn.com/page.php?sid=ItemMarket*
+// @match        https://www.torn.com/bazaar.php*
 // @source       https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
 // @updateURL    https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
 // @downloadURL  https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
