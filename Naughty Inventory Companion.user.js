@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.0.1
+// @version      1.1.0
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -14,13 +14,22 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @connect      api.torn.com
+// @run-at       document-end
 // ==/UserScript==
 
 (function () {
     "use strict";
 
-    const VERSION = "1.0.1";
+    const VERSION = "1.1.0";
     const BASE_URL = "https://api.torn.com/v2/";
+    const RUNTIME = (() => {
+        const userAgent = navigator.userAgent || "";
+        const hasTornPdaBridge = ["PDA_httpGet", "PDA_httpPost", "PDA_storage"]
+            .some((name) => Object.prototype.hasOwnProperty.call(window, name) || name in window);
+        const hasTornPdaUserAgent = /\bTornPDA\b|com\.manuito\.tornpda/i.test(userAgent);
+        const isTornPDA = hasTornPdaBridge || hasTornPdaUserAgent;
+        return Object.freeze({ isTornPDA, name: isTornPDA ? "TornPDA" : "Desktop" });
+    })();
     const INVENTORY_CATEGORIES = [
         "medical", "drug", "booster", "alcohol", "candy", "enhancer", "jewelry",
         "plushie", "flower", "temporary", "clothing", "car", "artifact", "book",
@@ -51,6 +60,7 @@
         expandedCategories: new Set(),
         filter: ""
     };
+    let filterRenderTimer = 0;
 
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -80,32 +90,65 @@
     };
 
     async function gmGet(key, fallback) {
-        try { return await GM.getValue(key, fallback); } catch { return fallback; }
+        try {
+            if (typeof GM !== "undefined" && typeof GM.getValue === "function") return await GM.getValue(key, fallback);
+            if (typeof GM_getValue === "function") return await Promise.resolve(GM_getValue(key, fallback));
+        } catch {}
+        return fallback;
     }
     function gmSet(key, value) {
-        void GM.setValue(key, value).catch(() => {});
+        try {
+            if (typeof GM !== "undefined" && typeof GM.setValue === "function") {
+                void Promise.resolve(GM.setValue(key, value)).catch(() => {});
+                return;
+            }
+            if (typeof GM_setValue === "function") GM_setValue(key, value);
+        } catch {}
     }
     function requestJson(url) {
         return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
+            const onload = (response) => {
+                const status = Number(response?.status ?? 200);
+                if (status < 200 || status >= 300) {
+                    reject(new Error("HTTP " + status));
+                    return;
+                }
+                try {
+                    const responseText = typeof response === "string" ? response : (response?.responseText ?? JSON.stringify(response?.body ?? response));
+                    const data = JSON.parse(responseText);
+                    if (data?.error) reject(new Error(data.error.error || "Torn API error"));
+                    else resolve(data);
+                } catch {
+                    reject(new Error("Unable to parse Torn API response"));
+                }
+            };
+            const onerror = () => reject(new Error("Network request failed"));
+            const details = {
                 method: "GET",
                 url,
                 headers: { Accept: "application/json" },
-                onload: (response) => {
-                    if (response.status < 200 || response.status >= 300) {
-                        reject(new Error("HTTP " + response.status));
-                        return;
-                    }
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        if (data?.error) reject(new Error(data.error.error || "Torn API error"));
-                        else resolve(data);
-                    } catch {
-                        reject(new Error("Unable to parse Torn API response"));
-                    }
-                },
-                onerror: () => reject(new Error("Network request failed"))
-            });
+                onload,
+                onerror
+            };
+            try {
+                if (typeof GM_xmlhttpRequest === "function") {
+                    GM_xmlhttpRequest(details);
+                    return;
+                }
+                if (typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function") {
+                    GM.xmlHttpRequest(details);
+                    return;
+                }
+                if (RUNTIME.isTornPDA && typeof window.PDA_httpGet === "function") {
+                    void Promise.resolve(window.PDA_httpGet(url, details.headers)).then(onload, onerror);
+                    return;
+                }
+                void fetch(url, { headers: details.headers })
+                    .then(async (response) => ({ status: response.status, responseText: await response.text() }))
+                    .then(onload, onerror);
+            } catch {
+                onerror();
+            }
         });
     }
     function apiUrl(path, params = {}) {
@@ -303,7 +346,7 @@
             }).join("") : "<div class='nic-empty'>No inventory rows match the current filter.</div>") + "</section></section>";
     }
     function settingsView() {
-        return "<section class='nic-settings nic-card'><div class='nic-card-title'><h2>Settings</h2><button data-tab='inventory'>Inventory</button></div>" +
+        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Detected when this script started'><span>Runtime</span><strong>" + RUNTIME.name + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
             "<label for='nic-api-key'>Torn API Key</label><div class='nic-key-row'><input id='nic-api-key' type='password' autocomplete='off' value='" +
             escapeHtml(state.apiKey) + "' placeholder='Enter Torn API key'><button data-action='save-key'>Save Key</button></div>" +
             "<p>Inventory is manual-refresh only. Each refresh retrieves the current Torn item catalog market price, inventory categories, and equipped item bonuses/mods.</p>" +
@@ -320,7 +363,35 @@
     function sizeKey() {
         return state.activeTab === "settings" ? "settings" : "inventory";
     }
+    function getViewportMetrics() {
+        const viewport = window.visualViewport;
+        return {
+            width: Math.max(1, Math.round(viewport?.width || window.innerWidth || document.documentElement.clientWidth || 1)),
+            height: Math.max(1, Math.round(viewport?.height || window.innerHeight || document.documentElement.clientHeight || 1)),
+            left: Math.max(0, Math.round(viewport?.offsetLeft || 0)),
+            top: Math.max(0, Math.round(viewport?.offsetTop || 0))
+        };
+    }
+    function applyTornPdaViewport() {
+        const dashboard = state.dashboard;
+        if (!dashboard) return;
+        const viewport = getViewportMetrics();
+        dashboard.style.setProperty("--nic-vv-width", viewport.width + "px");
+        dashboard.style.setProperty("--nic-vv-height", viewport.height + "px");
+        dashboard.style.setProperty("--nic-vv-left", viewport.left + "px");
+        dashboard.style.setProperty("--nic-vv-top", viewport.top + "px");
+        dashboard.style.removeProperty("left");
+        dashboard.style.removeProperty("top");
+        dashboard.style.removeProperty("right");
+        dashboard.style.removeProperty("bottom");
+        dashboard.style.removeProperty("width");
+        dashboard.style.removeProperty("height");
+    }
     function getSizeLimits() {
+        const viewport = getViewportMetrics();
+        if (RUNTIME.isTornPDA) {
+            return { minWidth: 1, minHeight: 1, maxWidth: viewport.width, maxHeight: viewport.height };
+        }
         return {
             minWidth: Math.min(380, Math.max(280, window.innerWidth - 20)),
             minHeight: Math.min(620, Math.max(360, window.innerHeight - 20)),
@@ -331,6 +402,10 @@
     function applyPosition(position = state.position) {
         const dashboard = state.dashboard;
         if (!dashboard) return;
+        if (RUNTIME.isTornPDA && !state.isMinimized) {
+            applyTornPdaViewport();
+            return;
+        }
         const rect = dashboard.getBoundingClientRect();
         const saved = position || { edge: "right", x: window.innerWidth - rect.width, y: 20 };
         const x = clamp(Number(saved.x || 0), 0, window.innerWidth - rect.width);
@@ -343,6 +418,7 @@
         else { dashboard.style.left = Math.max(0, window.innerWidth - rect.width) + "px"; dashboard.style.top = y + "px"; }
     }
     function savePosition() {
+        if (RUNTIME.isTornPDA) return;
         const rect = state.dashboard.getBoundingClientRect();
         const distances = { left: rect.left, right: window.innerWidth - rect.right, top: rect.top, bottom: window.innerHeight - rect.bottom };
         const edge = Object.entries(distances).sort((a, b) => a[1] - b[1])[0][0];
@@ -351,7 +427,7 @@
         applyPosition();
     }
     function saveSize() {
-        if (state.isMinimized) return;
+        if (state.isMinimized || RUNTIME.isTornPDA) return;
         const rect = state.dashboard.getBoundingClientRect();
         state.windowSizes[sizeKey()] = { width: rect.width, height: rect.height };
         saveDashboardState();
@@ -359,6 +435,10 @@
     function applySize() {
         if (state.isMinimized) return;
         const dashboard = state.dashboard;
+        if (RUNTIME.isTornPDA) {
+            applyTornPdaViewport();
+            return;
+        }
         const limits = getSizeLimits();
         const saved = state.windowSizes[sizeKey()] || { width: 760, height: Math.min(760, window.innerHeight * .86) };
         dashboard.style.width = clamp(Number(saved.width || 760), limits.minWidth, limits.maxWidth) + "px";
@@ -371,6 +451,7 @@
         const title = dashboard.querySelector("#nic-title");
         const minimize = dashboard.querySelector("#nic-minimize");
         const handles = dashboard.querySelectorAll(".nic-resize");
+        dashboard.dataset.minimized = String(state.isMinimized);
         if (state.isMinimized) {
             body.style.setProperty("display", "none", "important");
             dashboard.style.width = "36px";
@@ -384,7 +465,14 @@
             minimize.style.display = "none";
             handles.forEach((handle) => { handle.style.display = "none"; });
             dashboard.style.cursor = "pointer";
-            applyPosition();
+            if (RUNTIME.isTornPDA) {
+                dashboard.style.left = "auto";
+                dashboard.style.top = "calc(env(safe-area-inset-top) + 8px)";
+                dashboard.style.right = "calc(env(safe-area-inset-right) + 8px)";
+                dashboard.style.bottom = "auto";
+            } else {
+                applyPosition();
+            }
         } else {
             body.style.setProperty("display", "flex", "important");
             dashboard.style.minWidth = "";
@@ -394,7 +482,7 @@
             title.textContent = "▣ Naughty Inventory Companion v" + VERSION;
             title.style.fontSize = "12px";
             minimize.style.display = "grid";
-            handles.forEach((handle) => { handle.style.display = "block"; });
+            handles.forEach((handle) => { handle.style.display = RUNTIME.isTornPDA ? "none" : "block"; });
             dashboard.style.cursor = "";
             applySize();
         }
@@ -403,7 +491,13 @@
         const dashboard = state.dashboard;
         if (!dashboard) return;
         dashboard.dataset.theme = state.theme;
+        dashboard.dataset.tab = state.activeTab;
         const content = dashboard.querySelector("#nic-content");
+        const activeElement = document.activeElement;
+        const filterFocus = activeElement?.id === "nic-filter" ? {
+            start: activeElement.selectionStart,
+            end: activeElement.selectionEnd
+        } : null;
         const body = state.activeTab === "settings" ? settingsView() :
             "<div class='nic-topline'><span>" + escapeHtml(state.status) + "</span><button data-action='refresh' " +
             (state.refreshInFlight || !state.apiKey ? "disabled" : "") + ">↻ " + (state.refreshInFlight ? "Refreshing…" : "Refresh") +
@@ -438,7 +532,11 @@
         content.querySelector("#nic-filter")?.addEventListener("input", (event) => {
             state.filter = event.target.value;
             saveDashboardState();
-            render();
+            window.clearTimeout(filterRenderTimer);
+            filterRenderTimer = window.setTimeout(() => {
+                filterRenderTimer = 0;
+                render();
+            }, 120);
         });
         content.querySelectorAll("[data-parent-sort]").forEach((button) => button.onclick = () => {
             const key = button.dataset.parentSort;
@@ -459,28 +557,44 @@
             saveDashboardState();
             render();
         });
+        if (filterFocus) {
+            const filterInput = content.querySelector("#nic-filter");
+            if (filterInput) {
+                try { filterInput.focus({ preventScroll: true }); } catch { filterInput.focus(); }
+                filterInput.setSelectionRange(filterFocus.start, filterFocus.end);
+            }
+        }
     }
     function bindWindowControls() {
         const dashboard = state.dashboard;
-        const drag = dashboard.querySelector("#nic-drag");
-        let dragging = false, didDrag = false, offsetX = 0, offsetY = 0;
-        drag.addEventListener("mousedown", (event) => {
-            if (event.target.closest("#nic-minimize")) return;
+        const dragHandle = dashboard.querySelector("#nic-drag");
+        const usePointerEvents = typeof window.PointerEvent === "function";
+        const events = usePointerEvents ? { down: "pointerdown", move: "pointermove", up: "pointerup" } : { down: "mousedown", move: "mousemove", up: "mouseup" };
+        let dragging = false, didDrag = false, dragStart = null, dragOffsetX = 0, dragOffsetY = 0, pointerId = null;
+        dragHandle.addEventListener(events.down, (event) => {
+            if (RUNTIME.isTornPDA || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
             const rect = dashboard.getBoundingClientRect();
-            dragging = true; didDrag = false;
-            offsetX = event.clientX - rect.left;
-            offsetY = event.clientY - rect.top;
+            dragging = true;
+            didDrag = false;
+            dragStart = { x: event.clientX, y: event.clientY };
+            dragOffsetX = event.clientX - rect.left;
+            dragOffsetY = event.clientY - rect.top;
+            pointerId = usePointerEvents ? event.pointerId : null;
+            if (usePointerEvents) dragHandle.setPointerCapture?.(event.pointerId);
         });
-        document.addEventListener("mousemove", (event) => {
-            if (!dragging) return;
-            didDrag = true;
+        document.addEventListener(events.move, (event) => {
+            if (!dragging || (usePointerEvents && event.pointerId !== pointerId)) return;
+            if (Math.abs(event.clientX - dragStart.x) > 3 || Math.abs(event.clientY - dragStart.y) > 3) didDrag = true;
             const rect = dashboard.getBoundingClientRect();
-            dashboard.style.left = clamp(event.clientX - offsetX, 0, window.innerWidth - rect.width) + "px";
-            dashboard.style.top = clamp(event.clientY - offsetY, 0, window.innerHeight - rect.height) + "px";
+            dashboard.style.left = clamp(event.clientX - dragOffsetX, 0, window.innerWidth - rect.width) + "px";
+            dashboard.style.top = clamp(event.clientY - dragOffsetY, 0, window.innerHeight - rect.height) + "px";
         });
-        document.addEventListener("mouseup", () => {
-            if (dragging) savePosition();
+        document.addEventListener(events.up, (event) => {
+            if (!dragging || (usePointerEvents && event.pointerId !== pointerId)) return;
+            if (usePointerEvents) dragHandle.releasePointerCapture?.(event.pointerId);
+            if (didDrag) savePosition();
             dragging = false;
+            pointerId = null;
         });
         dashboard.addEventListener("click", () => {
             if (!state.isMinimized || didDrag) return;
@@ -496,44 +610,124 @@
             saveDashboardState();
             applyWidgetView();
         });
-        let resizing = false, start = null;
-        dashboard.querySelectorAll(".nic-resize").forEach((handle) => handle.addEventListener("mousedown", (event) => {
-            if (state.isMinimized) return;
-            event.preventDefault(); event.stopPropagation();
+        let resizing = false, resizeStart = null, resizePointerId = null, resizeHandle = null;
+        dashboard.querySelectorAll(".nic-resize").forEach((handle) => handle.addEventListener(events.down, (event) => {
+            if (RUNTIME.isTornPDA || state.isMinimized || ("button" in event && event.button !== 0)) return;
+            event.preventDefault();
+            event.stopPropagation();
             resizing = true;
-            start = { x: event.clientX, y: event.clientY, rect: dashboard.getBoundingClientRect(), corner: handle.dataset.corner };
+            resizeStart = { x: event.clientX, y: event.clientY, rect: dashboard.getBoundingClientRect(), corner: handle.dataset.corner };
+            resizePointerId = usePointerEvents ? event.pointerId : null;
+            resizeHandle = handle;
+            if (usePointerEvents) handle.setPointerCapture?.(event.pointerId);
             document.body.style.userSelect = "none";
         }));
-        document.addEventListener("mousemove", (event) => {
-            if (!resizing || !start) return;
+        document.addEventListener(events.move, (event) => {
+            if (!resizing || !resizeStart || (usePointerEvents && event.pointerId !== resizePointerId)) return;
             const limits = getSizeLimits();
-            const fromLeft = start.corner.endsWith("left");
-            const fromTop = start.corner.startsWith("top");
-            const width = clamp(start.rect.width + (fromLeft ? start.x - event.clientX : event.clientX - start.x), limits.minWidth, Math.min(limits.maxWidth, fromLeft ? start.rect.right : window.innerWidth - start.rect.left));
-            const height = clamp(start.rect.height + (fromTop ? start.y - event.clientY : event.clientY - start.y), limits.minHeight, Math.min(limits.maxHeight, fromTop ? start.rect.bottom : window.innerHeight - start.rect.top));
+            const fromLeft = resizeStart.corner.endsWith("left");
+            const fromTop = resizeStart.corner.startsWith("top");
+            const width = clamp(resizeStart.rect.width + (fromLeft ? resizeStart.x - event.clientX : event.clientX - resizeStart.x), limits.minWidth, Math.min(limits.maxWidth, fromLeft ? resizeStart.rect.right : window.innerWidth - resizeStart.rect.left));
+            const height = clamp(resizeStart.rect.height + (fromTop ? resizeStart.y - event.clientY : event.clientY - resizeStart.y), limits.minHeight, Math.min(limits.maxHeight, fromTop ? resizeStart.rect.bottom : window.innerHeight - resizeStart.rect.top));
             dashboard.style.width = width + "px";
             dashboard.style.height = height + "px";
-            dashboard.style.left = (fromLeft ? start.rect.right - width : start.rect.left) + "px";
-            dashboard.style.top = (fromTop ? start.rect.bottom - height : start.rect.top) + "px";
+            dashboard.style.left = (fromLeft ? resizeStart.rect.right - width : resizeStart.rect.left) + "px";
+            dashboard.style.top = (fromTop ? resizeStart.rect.bottom - height : resizeStart.rect.top) + "px";
         });
-        document.addEventListener("mouseup", () => {
-            if (!resizing) return;
-            resizing = false; start = null; document.body.style.userSelect = "";
+        document.addEventListener(events.up, (event) => {
+            if (!resizing || (usePointerEvents && event.pointerId !== resizePointerId)) return;
+            if (usePointerEvents) resizeHandle?.releasePointerCapture?.(event.pointerId);
+            resizing = false;
+            resizeStart = null;
+            resizePointerId = null;
+            resizeHandle = null;
+            document.body.style.userSelect = "";
             saveSize(); savePosition(); render();
         });
-        window.addEventListener("resize", () => { applySize(); saveSize(); });
+        let viewportFrame = 0;
+        const syncViewport = () => {
+            cancelAnimationFrame(viewportFrame);
+            viewportFrame = requestAnimationFrame(() => {
+                applySize();
+                if (!RUNTIME.isTornPDA) saveSize();
+            });
+        };
+        window.addEventListener("resize", syncViewport);
+        window.addEventListener("orientationchange", syncViewport);
+        window.visualViewport?.addEventListener("resize", syncViewport);
+        window.visualViewport?.addEventListener("scroll", syncViewport);
     }
     function initializeDashboard() {
         const dashboard = document.createElement("aside");
         dashboard.id = "nic-wrapper";
-        dashboard.innerHTML = "<style>" +
-            "#nic-wrapper{position:fixed;z-index:999999;display:flex;flex-direction:column;overflow:hidden;background:rgba(18,23,32,.98);color:#edf4ff;border:1px solid #34445e;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.5);font-family:Inter,Segoe UI,Arial,sans-serif}" +
-            "#nic-wrapper[data-theme='light']{background:#f7fafc;color:#172033;border-color:#cbd5e1}#nic-wrapper *,#nic-wrapper *:before,#nic-wrapper *:after{box-sizing:border-box;min-width:0;max-width:100%;overflow-wrap:anywhere}" +
-            "#nic-drag{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;background:linear-gradient(90deg,#182337,#223653);border-bottom:1px solid #435671;cursor:move;user-select:none}#nic-wrapper[data-theme='light'] #nic-drag{background:#e8f0fa;border-color:#cbd5e1}" +
-            "#nic-title{font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#nic-minimize{width:36px;height:30px;flex:0 0 36px;place-items:center;border:1px solid #6980a0;border-radius:6px;background:#263b59;color:#fff;font-size:19px;font-weight:700;cursor:pointer}" +
-            "#nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow:auto;padding:10px;scrollbar-width:none;-ms-overflow-style:none}#nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{width:0;height:0}#nic-content{display:grid;gap:9px;width:100%;align-content:start}" +
-            "button{border:1px solid #455a78;border-radius:6px;background:#263b59;color:#fff;padding:6px 9px;font-size:11px;font-weight:650;cursor:pointer}button:hover{filter:brightness(1.15)}button:disabled{opacity:.5;cursor:not-allowed}#nic-wrapper[data-theme='light'] button{background:#e4edf8;color:#172033;border-color:#9aafc9}.nic-topline{display:flex;align-items:center;gap:7px;color:#aebed3;font-size:10px}.nic-topline span{flex:1}.nic-topline button:first-of-type{background:#28704d;border-color:#38855e;color:#fff}.nic-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.nic-summary-card,.nic-card{width:100%;border:1px solid #34445e;border-radius:8px;padding:10px;background:linear-gradient(145deg,rgba(34,50,76,.82),rgba(17,24,36,.78))}#nic-wrapper[data-theme='light'] .nic-summary-card,#nic-wrapper[data-theme='light'] .nic-card{background:#fff;border-color:#cbd5e1}.nic-summary-card span{display:block;color:#aebed3;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.nic-summary-card strong{display:block;color:#86d49b;font-size:16px;margin:4px 0}.nic-summary-card small{color:#9baabd;font-size:10px;line-height:1.3}.nic-toolbar{display:flex;align-items:center;gap:8px;color:#9baabd;font-size:10px}.nic-toolbar input,.nic-key-row input{flex:1;min-width:0;border:1px solid #4d6282;border-radius:6px;background:#111a28;color:#fff;padding:7px 8px;font-size:11px}#nic-wrapper[data-theme='light'] .nic-toolbar input,#nic-wrapper[data-theme='light'] .nic-key-row input{background:#fff;color:#172033;border-color:#94a3b8}.nic-category-table{width:100%;overflow:auto;scrollbar-width:none;-ms-overflow-style:none;border:1px solid #34445e;border-radius:8px;background:rgba(10,15,24,.55)}#nic-wrapper[data-theme='light'] .nic-category-table{background:#fff;border-color:#cbd5e1}.nic-parent-header,.nic-category-row{display:grid;grid-template-columns:minmax(130px,1.7fr) minmax(52px,.65fr) minmax(54px,.7fr) minmax(102px,1.1fr) minmax(56px,.55fr);gap:6px;align-items:center;width:100%}.nic-parent-header{position:sticky;top:0;z-index:3;padding:5px 6px;background:#25364f;border-bottom:1px solid #4a5e7c}#nic-wrapper[data-theme='light'] .nic-parent-header{background:#e8f0fa;border-color:#cbd5e1}.nic-column-button,.nic-nested-button{padding:2px 0;border:0;background:transparent!important;color:inherit!important;text-align:left;font-size:10px;font-weight:800}.nic-column-button span,.nic-nested-button span{color:#8eb5e5}.nic-column-button:not(:first-child){text-align:right}.nic-category{border-bottom:1px solid #273449}.nic-category:last-child{border-bottom:0}.nic-category-row{border:0;border-radius:0;background:rgba(30,45,67,.62);padding:8px 7px;color:#eaf2ff;text-align:right;font-size:11px}#nic-wrapper[data-theme='light'] .nic-category-row{background:#f8fafc;color:#172033}.nic-category-row:hover{background:#314967}.nic-category-name{text-align:left;font-weight:800;text-transform:capitalize}.nic-caret{display:inline-block;width:16px;color:#8eb5e5;font-size:16px;line-height:10px}.nic-money{text-align:right}.nic-total{color:#86d49b;font-weight:800}.nic-nested{padding:0 7px 8px;background:rgba(11,17,26,.62)}#nic-wrapper[data-theme='light'] .nic-nested{background:#f8fafc}.nic-item-header,.nic-item-row{display:grid;grid-template-columns:minmax(128px,1.7fr) minmax(42px,.5fr) minmax(80px,.95fr) minmax(84px,1fr) minmax(110px,1.45fr) minmax(92px,1.2fr) minmax(58px,.7fr);gap:6px;align-items:center}.nic-item-header{padding:7px 5px 4px;color:#aebed3;border-bottom:1px solid #34445e}.nic-item-header .nic-nested-button:not(:first-child){text-align:right}.nic-item-row{padding:7px 5px;border-bottom:1px solid #1e2a3b;font-size:10px;color:#d6e0ed}.nic-item-row:last-child{border-bottom:0}.nic-item-row>div:not(:first-child){text-align:right}.nic-item-name{font-weight:750;color:#f4f8ff;text-align:left!important}.nic-equipped{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid #467eb0;border-radius:3px;color:#9dd8ff;font-size:8px;text-transform:uppercase}.nic-perks{color:#9dd8ff}.nic-mods{color:#d2a8ff}.nic-loaned{color:#f1b86e;font-weight:750}.nic-owned{color:#86d49b;font-weight:750}.nic-muted{color:#718096}.nic-warning,.nic-error{padding:7px 9px;border-radius:6px;font-size:10px}.nic-warning{border:1px solid #8a6e36;background:rgba(151,111,36,.18);color:#f1cb82}.nic-error{border:1px solid #9a4646;background:rgba(151,45,45,.2);color:#ffadad}.nic-empty{padding:18px 8px;color:#9baabd;font-size:11px;text-align:center}.nic-settings{display:grid;gap:9px}.nic-card-title{display:flex;justify-content:space-between;align-items:center;gap:8px}.nic-card-title h2{margin:0;font-size:14px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions{display:flex;gap:7px}.nic-settings p{margin:0;color:#9baabd;font-size:10px;line-height:1.45}.nic-resize{position:absolute;z-index:4;width:20px;height:20px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}@media(max-width:600px){.nic-summary-grid{grid-template-columns:1fr}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(105px,1.5fr) minmax(42px,.55fr) minmax(45px,.6fr) minmax(88px,1fr) minmax(42px,.45fr);font-size:9px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(88px,1.35fr) minmax(34px,.45fr) minmax(58px,.8fr) minmax(62px,.85fr) minmax(80px,1.1fr) minmax(68px,1fr) minmax(43px,.55fr);font-size:8px}.nic-item-row{gap:3px}.nic-item-header{gap:3px}}" +
-            "</style><header id='nic-drag'><span id='nic-title'></span><button id='nic-minimize' aria-label='Minimize Naughty Inventory Companion'>−</button></header><main id='nic-body'><div id='nic-content'></div></main><i class='nic-resize' data-corner='top-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-right' title='Resize this tab'></i>";
+        dashboard.dataset.runtime = RUNTIME.isTornPDA ? "tornpda" : "desktop";
+        dashboard.innerHTML = `
+            <style>
+                #nic-wrapper{position:fixed;z-index:999999;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(150deg,rgba(20,28,42,.985),rgba(13,19,30,.985));color:#edf4ff;border:1px solid #40516d;border-radius:14px;box-shadow:0 16px 38px rgba(0,0,0,.55);font-family:Inter,Segoe UI,Arial,sans-serif;contain:layout style}
+                #nic-wrapper[data-theme='light']{background:linear-gradient(145deg,#d9e2ed,#c8d4e1);color:#172438;border-color:#71849c;box-shadow:0 14px 30px rgba(21,35,54,.24)}
+                #nic-wrapper[data-runtime='tornpda']:not([data-minimized='true']){left:calc(var(--nic-vv-left,0px) + env(safe-area-inset-left) + 5px)!important;top:calc(var(--nic-vv-top,0px) + env(safe-area-inset-top) + 5px)!important;right:auto!important;bottom:auto!important;width:max(1px,calc(var(--nic-vv-width,100vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 10px))!important;height:max(1px,calc(var(--nic-vv-height,100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 10px))!important;border-radius:13px}
+                #nic-wrapper *,#nic-wrapper *:before,#nic-wrapper *:after{box-sizing:border-box;min-width:0;max-width:100%;overflow-wrap:anywhere}
+                #nic-drag{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:8px 11px;background:linear-gradient(100deg,#1b2a43,#28446a);border-bottom:1px solid #4e6687;cursor:move;user-select:none;touch-action:none}
+                #nic-wrapper[data-theme='light'] #nic-drag{background:linear-gradient(100deg,#bbcadd,#d3dee9);border-color:#778ba5}
+                #nic-wrapper[data-runtime='tornpda'] #nic-drag{cursor:default;touch-action:manipulation}
+                #nic-wrapper[data-minimized='true'] #nic-drag{height:36px;min-height:36px;padding:0;border:0;justify-content:center;cursor:pointer}
+                #nic-title{font-size:12px;font-weight:800;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+                #nic-minimize{display:grid;width:42px;height:36px;min-width:42px;flex:0 0 42px;place-items:center;border:1px solid #7793bb;border-radius:8px;background:#294564;color:#fff;font-size:21px;font-weight:750;line-height:1;cursor:pointer;touch-action:manipulation}
+                #nic-wrapper[data-theme='light'] #nic-minimize{background:#dce7f1;color:#1c2a3e;border-color:#718aa7}
+                #nic-minimize:hover,button:hover{filter:brightness(1.1);transform:translateY(-1px)}
+                #nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow:hidden;padding:10px;overscroll-behavior:contain}
+                #nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{width:0;height:0}
+                #nic-content{display:flex;flex:1 1 auto;flex-direction:column;gap:10px;min-height:0;width:100%}
+                button{min-height:32px;border:1px solid #526986;border-radius:8px;background:#294563;color:#f6f9ff;padding:6px 9px;font-size:11px;font-weight:750;line-height:1.1;cursor:pointer;transition:filter .15s ease,transform .15s ease;touch-action:manipulation}
+                button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+                #nic-wrapper[data-theme='light'] button{background:#d2deea;color:#18283d;border-color:#7890aa}
+                .nic-topline{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:7px;color:#acbdd3;font-size:10px}
+                .nic-topline span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+                .nic-topline button:first-of-type{background:#276f4d;border-color:#409265;color:#fff}
+                .nic-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+                .nic-summary-card,.nic-card{width:100%;border:1px solid #40516d;border-radius:11px;padding:10px;background:linear-gradient(145deg,rgba(40,57,83,.84),rgba(17,25,38,.84));box-shadow:inset 0 1px rgba(255,255,255,.035)}
+                #nic-wrapper[data-theme='light'] .nic-summary-card,#nic-wrapper[data-theme='light'] .nic-card{background:linear-gradient(145deg,#e1e9f1,#cedae6);border-color:#8395aa;box-shadow:inset 0 1px rgba(255,255,255,.5)}
+                .nic-summary-card span{display:block;color:#aebed3;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.055em}
+                #nic-wrapper[data-theme='light'] .nic-summary-card span{color:#425772}
+                .nic-summary-card strong{display:block;color:#89dda2;font-size:16px;line-height:1.15;margin:4px 0}
+                .nic-summary-card small{display:block;color:#9baabd;font-size:10px;line-height:1.35}
+                #nic-wrapper[data-theme='light'] .nic-summary-card small{color:#475d76}
+                .nic-layout{display:flex;flex:1 1 auto;flex-direction:column;gap:10px;min-height:0}
+                .nic-toolbar{display:flex;align-items:center;gap:8px;color:#9baabd;font-size:10px}
+                .nic-toolbar input,.nic-key-row input{width:100%;min-height:34px;min-width:0;border:1px solid #526986;border-radius:8px;background:#111b2a;color:#f4f8ff;padding:7px 9px;font-size:11px;outline:none}
+                .nic-toolbar input:focus,.nic-key-row input:focus{border-color:#8eb5e5;box-shadow:0 0 0 2px rgba(110,159,214,.22)}
+                #nic-wrapper[data-theme='light'] .nic-toolbar input,#nic-wrapper[data-theme='light'] .nic-key-row input{background:#e6edf4;color:#17263b;border-color:#8397ae}
+                .nic-category-table{width:100%;flex:1 1 auto;min-height:132px;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none;border:1px solid #40516d;border-radius:10px;background:rgba(8,13,22,.45);overscroll-behavior:contain;touch-action:pan-y}
+                #nic-wrapper[data-theme='light'] .nic-category-table{background:#d5e0eb;border-color:#8193a8}
+                .nic-parent-header,.nic-category-row{display:grid;grid-template-columns:minmax(130px,1.7fr) minmax(52px,.65fr) minmax(54px,.7fr) minmax(102px,1.1fr) minmax(56px,.55fr);gap:6px;align-items:center;width:100%}
+                .nic-parent-header{position:sticky;top:0;z-index:3;padding:7px;background:#263a57;border-bottom:1px solid #506887}
+                #nic-wrapper[data-theme='light'] .nic-parent-header{background:#c4d1df;border-color:#8094ad}
+                .nic-column-button,.nic-nested-button{min-height:22px;padding:2px 0;border:0;background:transparent!important;color:inherit!important;text-align:left;font-size:10px;font-weight:800;transform:none!important}
+                .nic-column-button span,.nic-nested-button span{color:#8eb5e5}.nic-column-button:not(:first-child){text-align:right}
+                .nic-category{border-bottom:1px solid #2a3a51}.nic-category:last-child{border-bottom:0}
+                .nic-category-row{min-height:39px;border:0;border-radius:0;background:rgba(34,52,78,.72);padding:8px;color:#edf4ff;text-align:right;font-size:11px}
+                #nic-wrapper[data-theme='light'] .nic-category-row{background:#dce6ef;color:#17263b}.nic-category-row:hover{background:#395574}
+                #nic-wrapper[data-theme='light'] .nic-category-row:hover{background:#c8d6e3}
+                .nic-category-name{text-align:left;font-weight:800;text-transform:capitalize}.nic-caret{display:inline-block;width:16px;color:#8eb5e5;font-size:16px;line-height:10px}.nic-money{text-align:right}.nic-total{color:#89dda2;font-weight:800}
+                .nic-nested{padding:0 7px 8px;background:rgba(10,16,26,.58)}#nic-wrapper[data-theme='light'] .nic-nested{background:#d2dde8}
+                .nic-item-header,.nic-item-row{display:grid;grid-template-columns:minmax(128px,1.7fr) minmax(42px,.5fr) minmax(80px,.95fr) minmax(84px,1fr) minmax(110px,1.45fr) minmax(92px,1.2fr) minmax(58px,.7fr);gap:6px;align-items:center}
+                .nic-item-header{padding:8px 5px 5px;color:#aebed3;border-bottom:1px solid #40516d}.nic-item-header .nic-nested-button:not(:first-child){text-align:right}
+                .nic-item-row{padding:8px 5px;border-bottom:1px solid #202d40;font-size:10px;color:#d8e3f0}.nic-item-row:last-child{border-bottom:0}.nic-item-row>div:not(:first-child){text-align:right}
+                #nic-wrapper[data-theme='light'] .nic-item-row{color:#263a53;border-color:#b1c0cf}
+                .nic-item-name{font-weight:800;color:#f7fbff;text-align:left!important}#nic-wrapper[data-theme='light'] .nic-item-name{color:#15283f}
+                .nic-equipped{display:inline-block;margin-left:5px;padding:2px 4px;border:1px solid #5289be;border-radius:4px;color:#a9deff;font-size:8px;font-weight:800;text-transform:uppercase}.nic-perks{color:#a9deff}.nic-mods{color:#d8b3ff}.nic-loaned{color:#f3bd72;font-weight:750}.nic-owned{color:#89dda2;font-weight:750}.nic-muted{color:#7890aa}
+                .nic-warning,.nic-error{padding:8px 10px;border-radius:8px;font-size:10px}.nic-warning{border:1px solid #9a7b3c;background:rgba(159,119,40,.18);color:#f3d18a}.nic-error{border:1px solid #a54d55;background:rgba(168,53,64,.2);color:#ffb9bf}
+                .nic-empty{padding:22px 10px;color:#aebed3;font-size:11px;text-align:center}.nic-settings{display:grid;gap:11px;align-content:start}.nic-card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.nic-card-title h2{margin:0;font-size:15px}.nic-runtime{display:flex;align-items:center;gap:5px;margin-top:3px;color:#9fb0c7;font-size:9px;font-weight:700}.nic-runtime strong{padding:2px 5px;border:1px solid #58769b;border-radius:999px;color:#a9deff;font-size:9px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions{display:flex;gap:7px;flex-wrap:wrap}.nic-key-row input{flex:1 1 180px}.nic-settings p{margin:0;color:#aebed3;font-size:10px;line-height:1.5}
+                #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
+                .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}
+                #nic-wrapper[data-runtime='tornpda'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='tornpda'] button{min-height:38px}#nic-wrapper[data-runtime='tornpda'] #nic-body{padding:8px}#nic-wrapper[data-runtime='tornpda'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='tornpda'] .nic-summary-card{padding:8px}
+                #nic-wrapper[data-runtime='tornpda'] .nic-item-header{display:none}#nic-wrapper[data-runtime='tornpda'] .nic-item-row{grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;padding:9px 5px}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:first-child{grid-column:1/-1;margin-bottom:1px}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:not(:first-child){grid-column:1/-1;display:flex;justify-content:space-between;gap:8px;text-align:left}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:not(:first-child):before{color:#8fa4be;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-runtime='tornpda'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}
+                @media(max-width:600px){.nic-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.nic-summary-card span{font-size:8px}.nic-summary-card strong{font-size:14px}.nic-summary-card small{font-size:8px}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(0,1.35fr) minmax(0,.45fr) minmax(0,.5fr) minmax(0,1fr) minmax(0,.45fr);gap:3px;font-size:9px}.nic-parent-header{padding:6px 5px}.nic-category-row{padding:8px 5px}.nic-category-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nic-caret{width:12px}.nic-toolbar{gap:6px}.nic-toolbar span{display:none}.nic-key-row,.nic-setting-actions{display:grid;grid-template-columns:1fr}.nic-key-row input{min-height:38px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(80px,1.25fr) minmax(32px,.4fr) minmax(54px,.7fr) minmax(58px,.75fr) minmax(74px,1fr) minmax(62px,.9fr) minmax(42px,.5fr);gap:3px;font-size:8px}}
+            </style>
+            <style>#nic-wrapper[data-runtime='tornpda'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='tornpda'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
+            <header id='nic-drag'><span id='nic-title'></span><button id='nic-minimize' aria-label='Minimize Naughty Inventory Companion'>−</button></header>
+            <main id='nic-body'><div id='nic-content'></div></main>
+            <i class='nic-resize' data-corner='top-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-right' title='Resize this tab'></i>`;
         document.body.appendChild(dashboard);
         state.dashboard = dashboard;
         bindWindowControls();

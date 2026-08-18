@@ -12,8 +12,15 @@ assert.match(source, /equipmentMaps\.mods\.get\(uid\)/);
 assert.match(source, /factionOwned: item\.faction_owned === true/);
 assert.match(source, /data-parent-sort/);
 assert.match(source, /data-item-sort/);
+assert.match(source, /const RUNTIME = \(\(\) =>/);
+assert.match(source, /PDA_httpGet/);
+assert.match(source, /com\\\.manuito\\\.tornpda/);
+assert.doesNotMatch(source, /maxTouchPoints|ontouchstart/);
+assert.match(source, /window\.visualViewport/);
+assert.match(source, /safe-area-inset/);
+assert.match(source, /pointerdown/);
 assert.match(source, /if \(index < INVENTORY_CATEGORIES\.length - 1\) await new Promise\(\(resolve\) => setTimeout\(resolve, 650\)\)/);
 assert.doesNotMatch(source, /setInterval\(/);
 assert.doesNotMatch(source, /scheduleAutoRefresh/);
 
-console.log("Inventory regression checks passed: live-price, equipment, loan, sorting, and manual-only refresh guards.");
+console.log("Inventory regression checks passed: data, manual-only refresh, and TornPDA layout guards.");
