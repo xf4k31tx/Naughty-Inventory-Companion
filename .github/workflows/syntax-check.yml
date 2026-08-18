@@ -1,0 +1,25 @@
+name: Syntax Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-syntax:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check userscript syntax
+        run: node --check "Naughty Inventory Companion.user.js"
+      - name: Run inventory regression checks
+        run: node "inventory-regression.test.js"
