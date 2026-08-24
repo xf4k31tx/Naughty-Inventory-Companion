@@ -45,9 +45,15 @@ Values are an estimate based on the latest loaded catalog market price; they are
 
 On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Narrow layouts reflow detailed rows and expose compact sorting controls instead of forcing tiny columns or horizontal clipping.
 
+## TornPDA compatibility and storage
+
+The companion gives TornPDA's native, per-script `PDA_storage` priority over Tampermonkey storage. It reads the native namespace once at startup (using `loadAll` or `getMany` when provided), keeps a local cache, and batches writes. Existing GM/local values are migrated only for native keys that do not yet exist, so a newer TornPDA value takes precedence. If native storage is absent, unavailable, or reaches its quota, the script continues with compatible GM/local storage; the Settings screen reports which store is active. A late native-runtime confirmation can also promote already loaded compatibility data into `PDA_storage` without losing it.
+
+Native TornPDA detection is bridge-confirmed: the script waits for `flutterInAppWebViewPlatformReady` and checks `isTornPDA`. User-agent hints help it decide whether to wait for that bridge but do not independently identify the runtime. Viewport compactness is a separate decision: confirmed TornPDA, or a constrained desktop viewport, receives the full-viewport safe-area-aware compact layout; normal desktop retains draggable, resizable behavior. Requests prefer the declared GM network APIs and use native `PDA_httpGet` only when the confirmed native bridge is available.
+
 ## Privacy and API keys
 
-Your Torn API key, interface preferences, and cached inventory snapshot are stored in your local userscript storage. The script requests Torn data directly from `api.torn.com`. It does not upload inventory data to a separate service.
+Your Torn API key, interface preferences, and cached inventory snapshot are stored in your local per-script storage. The script requests Torn data directly from `api.torn.com`. It does not upload inventory data to a separate service.
 
 Treat API keys as secrets. Revoke and replace any key you believe has been exposed.
 

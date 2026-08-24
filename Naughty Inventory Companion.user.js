@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.1.3
+// @version      1.2.1
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -16,6 +16,7 @@
 // @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
+// @grant        unsafeWindow
 // @connect      api.torn.com
 // @run-at       document-end
 // ==/UserScript==
@@ -23,16 +24,99 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.3";
+    const VERSION = "1.2.1";
     const BASE_URL = "https://api.torn.com/v2/";
     const RUNTIME = (() => {
         const userAgent = navigator.userAgent || "";
-        const hasTornPdaBridge = ["PDA_httpGet", "PDA_httpPost", "PDA_storage"]
-            .some((name) => Object.prototype.hasOwnProperty.call(window, name) || name in window);
         const hasTornPdaUserAgent = /\bTornPDA\b|com\.manuito\.tornpda/i.test(userAgent);
-        const isTornPDA = hasTornPdaBridge || hasTornPdaUserAgent;
-        return Object.freeze({ isTornPDA, name: isTornPDA ? "TornPDA" : "Desktop" });
+        const listeners = new Set();
+        let isTornPDA = false;
+        let flutterReady = false;
+        let nativeCheckComplete = false;
+        let nativeCheckPromise = null;
+        let nativeCheckVersion = 0;
+        let startupPromise = null;
+        const notify = () => listeners.forEach((listener) => {
+            try { listener(); } catch {}
+        });
+        const confirmNativeRuntime = async (force = false) => {
+            if (nativeCheckPromise && !force) return nativeCheckPromise;
+            if (force) nativeCheckPromise = null;
+            const checkVersion = ++nativeCheckVersion;
+            nativeCheckPromise = (async () => {
+                const bridge = getFlutterBridge();
+                if (!bridge) {
+                    if (checkVersion === nativeCheckVersion) nativeCheckComplete = true;
+                    return false;
+                }
+                flutterReady = true;
+                let confirmed = false;
+                try {
+                    const response = await bridge.callHandler("isTornPDA");
+                    confirmed = response?.isTornPDA === true;
+                } catch {} finally {
+                    if (checkVersion !== nativeCheckVersion) return confirmed;
+                    isTornPDA = confirmed;
+                    nativeCheckComplete = true;
+                    notify();
+                }
+                return confirmed;
+            })();
+            return nativeCheckPromise;
+        };
+        const initialize = () => {
+            if (startupPromise) return startupPromise;
+            startupPromise = new Promise((resolve) => {
+                let settled = false;
+                let platformEventReceived = false;
+                const settle = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    resolve(value);
+                };
+                const checkWhenReady = () => {
+                    flutterReady = true;
+                    void confirmNativeRuntime(platformEventReceived).then(settle, () => settle(false));
+                };
+                window.addEventListener("flutterInAppWebViewPlatformReady", () => {
+                    platformEventReceived = true;
+                    checkWhenReady();
+                }, { once: true });
+                if (getFlutterBridge()) {
+                    checkWhenReady();
+                    return;
+                }
+                if (!hasTornPdaUserAgent && !getPdaStorage()) {
+                    nativeCheckComplete = true;
+                    settle(false);
+                    return;
+                }
+                window.setTimeout(() => {
+                    if (!nativeCheckComplete) {
+                        nativeCheckComplete = true;
+                        notify();
+                    }
+                    settle(false);
+                }, 1500);
+            });
+            return startupPromise;
+        };
+        return {
+            get isTornPDA() { return isTornPDA; },
+            get flutterReady() { return flutterReady; },
+            get nativeCheckComplete() { return nativeCheckComplete; },
+            get name() { return isTornPDA ? "TornPDA" : "Desktop"; },
+            initialize,
+            onChange(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+            canUseNativeHttp() { return isTornPDA && flutterReady && Boolean(getFlutterBridge()); },
+            nativeHttpGet(url, headers) {
+                const bridge = getFlutterBridge();
+                if (!isTornPDA || !flutterReady || !bridge) return Promise.reject(new Error("TornPDA HTTP handler is unavailable"));
+                return bridge.callHandler("PDA_httpGet", url, headers);
+            }
+        };
     })();
+    const RUNTIME_READY = RUNTIME.initialize();
     const INVENTORY_CATEGORIES = [
         "medical", "drug", "booster", "alcohol", "candy", "enhancer", "jewelry",
         "plushie", "flower", "temporary", "clothing", "car", "artifact", "book",
@@ -56,6 +140,7 @@
         position: "NIC_WIDGET_POSITION",
         inventory: "NIC_INVENTORY_CACHE"
     };
+    const STORAGE_KEYS = Object.values(STORAGE);
     const state = {
         apiKey: "",
         activeTab: "inventory",
@@ -72,6 +157,13 @@
         itemSort: { key: "total", direction: "desc" },
         expandedCategories: new Set(),
         filter: ""
+    };
+    const PERSISTENCE = {
+        pdaStorage: null,
+        pdaCache: Object.create(null),
+        pdaEnabled: false,
+        pdaQuotaExceeded: false,
+        hydrated: false
     };
     let filterRenderTimer = 0;
 
@@ -102,6 +194,24 @@
         return 0;
     };
 
+    function getPageWindow() {
+        try {
+            if (typeof unsafeWindow !== "undefined" && unsafeWindow) return unsafeWindow;
+        } catch {}
+        return window;
+    }
+    function getFlutterBridge() {
+        const pageWindow = getPageWindow();
+        const bridge = pageWindow?.flutter_inappwebview || window.flutter_inappwebview;
+        return typeof bridge?.callHandler === "function" ? bridge : null;
+    }
+    function getPdaStorage() {
+        try {
+            if (typeof PDA_storage !== "undefined" && PDA_storage) return PDA_storage;
+        } catch {}
+        const pageWindow = getPageWindow();
+        return pageWindow?.PDA_storage || window.PDA_storage || null;
+    }
     async function gmGet(key, fallback) {
         try {
             if (typeof GM !== "undefined" && typeof GM.getValue === "function") return await GM.getValue(key, fallback);
@@ -109,14 +219,120 @@
         } catch {}
         return fallback;
     }
-    function gmSet(key, value) {
+    async function gmSet(key, value) {
         try {
             if (typeof GM !== "undefined" && typeof GM.setValue === "function") {
-                void Promise.resolve(GM.setValue(key, value)).catch(() => {});
-                return;
+                await GM.setValue(key, value);
+                return true;
             }
-            if (typeof GM_setValue === "function") GM_setValue(key, value);
+            if (typeof GM_setValue === "function") {
+                await Promise.resolve(GM_setValue(key, value));
+                return true;
+            }
         } catch {}
+        return false;
+    }
+    function localGet(key, fallback) {
+        try {
+            const raw = window.localStorage?.getItem(key);
+            return raw === null || raw === undefined ? fallback : JSON.parse(raw);
+        } catch {}
+        return fallback;
+    }
+    function localSet(key, value) {
+        try {
+            window.localStorage?.setItem(key, JSON.stringify(value));
+            return true;
+        } catch {}
+        return false;
+    }
+    async function legacyGet(key, fallback) {
+        const value = await gmGet(key, undefined);
+        return value === undefined ? localGet(key, fallback) : value;
+    }
+    async function legacySetValues(values) {
+        await Promise.all(Object.entries(values).map(async ([key, value]) => {
+            if (!await gmSet(key, value)) localSet(key, value);
+        }));
+    }
+    async function legacyValues() {
+        const values = await Promise.all(STORAGE_KEYS.map((key) => legacyGet(key, undefined)));
+        return Object.fromEntries(STORAGE_KEYS.map((key, index) => [key, values[index]]));
+    }
+    function isStorageRecord(value) {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    }
+    async function readPdaCache(storage) {
+        if (typeof storage?.loadAll === "function") {
+            const values = await storage.loadAll();
+            return isStorageRecord(values) ? values : {};
+        }
+        if (typeof storage?.getMany === "function") {
+            const values = await storage.getMany(STORAGE_KEYS);
+            return isStorageRecord(values) ? values : {};
+        }
+        return {};
+    }
+    async function writePdaValues(values) {
+        const entries = Object.entries(values);
+        const storage = PERSISTENCE.pdaStorage;
+        if (!entries.length) return true;
+        if (!PERSISTENCE.pdaEnabled || PERSISTENCE.pdaQuotaExceeded || !storage) return false;
+        try {
+            if (typeof storage.setMany === "function") await storage.setMany(values);
+            else await Promise.all(entries.map(([key, value]) => storage.set(key, value)));
+            Object.assign(PERSISTENCE.pdaCache, values);
+            return true;
+        } catch (error) {
+            if (error?.code === "QuotaExceeded") PERSISTENCE.pdaQuotaExceeded = true;
+            return false;
+        }
+    }
+    async function persistValues(values) {
+        if (await writePdaValues(values)) return;
+        await legacySetValues(values);
+    }
+    async function loadStoredValues() {
+        const storage = getPdaStorage();
+        if (storage && (typeof storage.loadAll === "function" || typeof storage.getMany === "function")) {
+            try {
+                PERSISTENCE.pdaStorage = storage;
+                PERSISTENCE.pdaCache = await readPdaCache(storage);
+                PERSISTENCE.pdaEnabled = true;
+                const missing = STORAGE_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key));
+                const fallback = missing.length ? await legacyValues() : {};
+                const migration = Object.fromEntries(missing
+                    .filter((key) => fallback[key] !== undefined)
+                    .map((key) => [key, fallback[key]]));
+                if (Object.keys(migration).length && !await writePdaValues(migration)) await legacySetValues(migration);
+                return Object.fromEntries(STORAGE_KEYS.map((key) => [
+                    key,
+                    Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key) ? PERSISTENCE.pdaCache[key] : fallback[key]
+                ]));
+            } catch {}
+            PERSISTENCE.pdaStorage = null;
+            PERSISTENCE.pdaCache = Object.create(null);
+            PERSISTENCE.pdaEnabled = false;
+        }
+        return legacyValues();
+    }
+    async function promotePdaStorage() {
+        if (!PERSISTENCE.hydrated || PERSISTENCE.pdaEnabled) return;
+        const storage = getPdaStorage();
+        if (!storage || (typeof storage.loadAll !== "function" && typeof storage.getMany !== "function")) return;
+        try {
+            PERSISTENCE.pdaStorage = storage;
+            PERSISTENCE.pdaCache = await readPdaCache(storage);
+            PERSISTENCE.pdaEnabled = true;
+            const values = currentStoredValues();
+            const migration = Object.fromEntries(Object.entries(values)
+                .filter(([key]) => !Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key)));
+            if (Object.keys(migration).length && !await writePdaValues(migration)) await legacySetValues(migration);
+        } catch {
+            PERSISTENCE.pdaStorage = null;
+            PERSISTENCE.pdaCache = Object.create(null);
+            PERSISTENCE.pdaEnabled = false;
+        }
     }
     function requestJson(url) {
         return new Promise((resolve, reject) => {
@@ -143,6 +359,11 @@
                 onload,
                 onerror
             };
+            const requestWithFetch = () => {
+                void fetch(url, { headers: details.headers })
+                    .then(async (response) => ({ status: response.status, responseText: await response.text() }))
+                    .then(onload, onerror);
+            };
             try {
                 if (typeof GM_xmlhttpRequest === "function") {
                     GM_xmlhttpRequest(details);
@@ -152,13 +373,11 @@
                     GM.xmlHttpRequest(details);
                     return;
                 }
-                if (RUNTIME.isTornPDA && typeof window.PDA_httpGet === "function") {
-                    void Promise.resolve(window.PDA_httpGet(url, details.headers)).then(onload, onerror);
+                if (RUNTIME.canUseNativeHttp()) {
+                    void RUNTIME.nativeHttpGet(url, details.headers).then(onload, requestWithFetch);
                     return;
                 }
-                void fetch(url, { headers: details.headers })
-                    .then(async (response) => ({ status: response.status, responseText: await response.text() }))
-                    .then(onload, onerror);
+                requestWithFetch();
             } catch {
                 onerror();
             }
@@ -265,7 +484,7 @@
                 syncedAt: Date.now(),
                 failedCategories: failures
             };
-            gmSet(STORAGE.inventory, state.inventory);
+            void persistValues({ [STORAGE.inventory]: state.inventory });
             state.status = "Live Torn market values loaded.";
         } catch (error) {
             state.error = error.message || "Unable to refresh inventory";
@@ -371,19 +590,34 @@
             }).join("") : "<div class='nic-empty'>No inventory rows match the current filter.</div>") + "</section></section>";
     }
     function settingsView() {
-        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Detected from TornPDA signals and the active viewport'><span>Runtime</span><strong>" + runtimeInfo().label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
+        const storageLabel = PERSISTENCE.pdaEnabled
+            ? (PERSISTENCE.pdaQuotaExceeded ? "TornPDA storage is full; userscript storage is keeping new changes safe." : "TornPDA per-script storage is active.")
+            : "Userscript storage fallback is active.";
+        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Native TornPDA confirmation and viewport mode are checked independently'><span>Runtime</span><strong>" + runtimeInfo().label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
             "<label for='nic-api-key'>Torn API Key</label><div class='nic-key-row'><input id='nic-api-key' type='password' autocomplete='off' value='" +
             escapeHtml(state.apiKey) + "' placeholder='Enter Torn API key'><button data-action='save-key'>Save Key</button></div>" +
             "<p>Inventory is manual-refresh only. Each refresh retrieves the current Torn item catalog market price, inventory categories, and equipped item bonuses/mods.</p>" +
+            "<p>Storage: " + storageLabel + "</p>" +
             "<div class='nic-setting-actions'><button data-action='toggle-theme'>Use " + (state.theme === "dark" ? "Light" : "Dark") + " Mode</button>" +
             "<button data-action='clear-cache'>Clear Cached Inventory</button></div></section>";
     }
-    function saveDashboardState() {
-        gmSet(STORAGE.dashboard, {
+    function dashboardStateValue() {
+        return {
             activeTab: state.activeTab, theme: state.theme, isMinimized: state.isMinimized,
             windowSizes: state.windowSizes, parentSort: state.parentSort, itemSort: state.itemSort,
             expandedCategories: [...state.expandedCategories], filter: state.filter
-        });
+        };
+    }
+    function currentStoredValues() {
+        return {
+            [STORAGE.key]: state.apiKey,
+            [STORAGE.dashboard]: dashboardStateValue(),
+            [STORAGE.position]: state.position,
+            [STORAGE.inventory]: state.inventory
+        };
+    }
+    function saveDashboardState() {
+        void persistValues({ [STORAGE.dashboard]: dashboardStateValue() });
     }
     function sizeKey() {
         return state.activeTab === "settings" ? "settings" : "inventory";
@@ -400,8 +634,10 @@
     function runtimeInfo() {
         const viewport = getViewportMetrics();
         const scale = Number(window.visualViewport?.scale) || 1;
-        const compact = RUNTIME.isTornPDA || viewport.width <= 700 || viewport.height <= 520 || (scale > 1.1 && viewport.width <= 960);
-        return { compact, mode: compact ? "compact" : "desktop", label: RUNTIME.isTornPDA ? "TornPDA / compact" : compact ? "Compact viewport" : "Desktop" };
+        const viewportCompact = viewport.width <= 700 || viewport.height <= 520 || (scale > 1.1 && viewport.width <= 960);
+        const compact = RUNTIME.isTornPDA || viewportCompact;
+        const platform = RUNTIME.isTornPDA ? "TornPDA" : RUNTIME.nativeCheckComplete ? "Desktop" : "Checking TornPDA";
+        return { compact, mode: compact ? "compact" : "desktop", platform, label: platform + " / " + (compact ? "compact view" : "desktop view") };
     }
     function isCompactRuntime() {
         return runtimeInfo().compact;
@@ -411,6 +647,7 @@
         if (!dashboard) return runtimeInfo();
         const runtime = runtimeInfo();
         dashboard.dataset.runtime = runtime.mode;
+        dashboard.dataset.platform = runtime.platform.toLowerCase().replace(/[^a-z]+/g, "-");
         return runtime;
     }
     function applyCompactViewport() {
@@ -472,7 +709,7 @@
         const distances = { left: rect.left, right: window.innerWidth - rect.right, top: rect.top, bottom: window.innerHeight - rect.bottom };
         const edge = Object.entries(distances).sort((a, b) => a[1] - b[1])[0][0];
         state.position = { edge, x: rect.left, y: rect.top };
-        gmSet(STORAGE.position, state.position);
+        void persistValues({ [STORAGE.position]: state.position });
         applyPosition();
     }
     function saveSize() {
@@ -567,7 +804,7 @@
             state.apiKey = content.querySelector("#nic-api-key").value.trim();
             state.status = state.apiKey ? "API key saved. Inventory refresh is manual-only." : "Manual refresh only.";
             state.error = "";
-            gmSet(STORAGE.key, state.apiKey);
+            void persistValues({ [STORAGE.key]: state.apiKey });
             render();
         });
         content.querySelector("[data-action='toggle-theme']")?.addEventListener("click", () => {
@@ -577,7 +814,7 @@
         });
         content.querySelector("[data-action='clear-cache']")?.addEventListener("click", () => {
             state.inventory = null;
-            gmSet(STORAGE.inventory, null);
+            void persistValues({ [STORAGE.inventory]: null });
             state.status = "Cached inventory cleared.";
             render();
         });
@@ -641,7 +878,7 @@
         const dashboard = state.dashboard;
         const dragHandle = dashboard.querySelector("#nic-drag");
         const usePointerEvents = typeof window.PointerEvent === "function";
-        const events = usePointerEvents ? { down: "pointerdown", move: "pointermove", up: "pointerup" } : { down: "mousedown", move: "mousemove", up: "mouseup" };
+        const events = usePointerEvents ? { down: "pointerdown", move: "pointermove", up: "pointerup", cancel: "pointercancel" } : { down: "mousedown", move: "mousemove", up: "mouseup", cancel: null };
         let dragging = false, didDrag = false, dragStart = null, dragOffsetX = 0, dragOffsetY = 0, pointerId = null;
         dragHandle.addEventListener(events.down, (event) => {
             if (isCompactRuntime() || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
@@ -707,16 +944,20 @@
             dashboard.style.top = (fromTop ? resizeStart.rect.bottom - height : resizeStart.rect.top) + "px";
             applyCompactDetailLayout();
         });
-        document.addEventListener(events.up, (event) => {
+        const finishResize = (event) => {
             if (!resizing || (usePointerEvents && event.pointerId !== resizePointerId)) return;
-            if (usePointerEvents) resizeHandle?.releasePointerCapture?.(event.pointerId);
+            if (usePointerEvents) {
+                try { resizeHandle?.releasePointerCapture?.(event.pointerId); } catch {}
+            }
             resizing = false;
             resizeStart = null;
             resizePointerId = null;
             resizeHandle = null;
             document.body.style.userSelect = "";
             saveSize(); savePosition(); render();
-        });
+        };
+        document.addEventListener(events.up, finishResize);
+        if (events.cancel) document.addEventListener(events.cancel, finishResize);
         let viewportFrame = 0;
         const syncViewport = () => {
             cancelAnimationFrame(viewportFrame);
@@ -753,8 +994,8 @@
                 #nic-minimize{display:grid;width:42px;height:36px;min-width:42px;flex:0 0 42px;place-items:center;border:1px solid #7793bb;border-radius:8px;background:#294564;color:#fff;font-size:21px;font-weight:750;line-height:1;cursor:pointer;touch-action:manipulation}
                 #nic-wrapper[data-theme='light'] #nic-minimize{background:#dce7f1;color:#1c2a3e;border-color:#718aa7}
                 #nic-minimize:hover,button:hover{filter:brightness(1.1);transform:translateY(-1px)}
-                #nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow:hidden;padding:10px;overscroll-behavior:contain}
-                #nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{width:0;height:0}
+                #nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none;padding:10px;overscroll-behavior:contain}
+                #nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{display:none;width:0;height:0}
                 #nic-content{display:flex;flex:1 1 auto;flex-direction:column;gap:10px;min-height:0;width:100%}
                 button{min-height:32px;border:1px solid #526986;border-radius:8px;background:#294563;color:#f6f9ff;padding:6px 9px;font-size:11px;font-weight:750;line-height:1.1;cursor:pointer;transition:filter .15s ease,transform .15s ease;touch-action:manipulation}
                 button:disabled{opacity:.5;cursor:not-allowed;transform:none}
@@ -798,7 +1039,7 @@
                 .nic-warning,.nic-error{padding:8px 10px;border-radius:8px;font-size:10px}.nic-warning{border:1px solid #9a7b3c;background:rgba(159,119,40,.18);color:#f3d18a}.nic-error{border:1px solid #a54d55;background:rgba(168,53,64,.2);color:#ffb9bf}
                 .nic-empty{padding:22px 10px;color:#aebed3;font-size:11px;text-align:center}.nic-settings{display:grid;gap:11px;align-content:start}.nic-card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.nic-card-title h2{margin:0;font-size:15px}.nic-runtime{display:flex;align-items:center;gap:5px;margin-top:3px;color:#9fb0c7;font-size:9px;font-weight:700}.nic-runtime strong{padding:2px 5px;border:1px solid #58769b;border-radius:999px;color:#a9deff;font-size:9px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions{display:flex;gap:7px;flex-wrap:wrap}.nic-key-row input{flex:1 1 180px}.nic-settings p{margin:0;color:#aebed3;font-size:10px;line-height:1.5}
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
-                .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}
+                .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize::after{content:'';position:absolute;width:9px;height:9px;pointer-events:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='top-left']::after{left:4px;top:4px;border-left:2px solid #7793bb;border-top:2px solid #7793bb}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-left']::after{left:4px;bottom:4px;border-left:2px solid #7793bb;border-bottom:2px solid #7793bb}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-right']::after{right:4px;bottom:4px;border-right:2px solid #7793bb;border-bottom:2px solid #7793bb}
                 #nic-wrapper[data-runtime='compact'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='compact'] button{min-height:38px}#nic-wrapper[data-runtime='compact'] #nic-body{padding:8px}#nic-wrapper[data-runtime='compact'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='compact'] .nic-summary-card{padding:8px}
                 #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
                 #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
@@ -823,21 +1064,31 @@
         render();
     }
     async function bootstrap() {
-        const [apiKey, dashboard, position, inventory] = await Promise.all([
-            gmGet(STORAGE.key, ""), gmGet(STORAGE.dashboard, {}), gmGet(STORAGE.position, null), gmGet(STORAGE.inventory, null)
-        ]);
-        state.apiKey = String(apiKey || "").trim();
+        await RUNTIME_READY;
+        const stored = await loadStoredValues();
+        const dashboard = stored[STORAGE.dashboard];
+        state.apiKey = String(stored[STORAGE.key] || "").trim();
         state.activeTab = ["inventory", "settings"].includes(dashboard?.activeTab) ? dashboard.activeTab : "inventory";
         state.theme = dashboard?.theme === "light" ? "light" : "dark";
         state.isMinimized = dashboard?.isMinimized === true;
         state.windowSizes = dashboard?.windowSizes && typeof dashboard.windowSizes === "object" ? dashboard.windowSizes : {};
-        state.position = position;
-        state.inventory = inventory;
+        state.position = stored[STORAGE.position] ?? null;
+        state.inventory = stored[STORAGE.inventory] ?? null;
         state.parentSort = dashboard?.parentSort?.key ? dashboard.parentSort : state.parentSort;
         state.itemSort = dashboard?.itemSort?.key ? dashboard.itemSort : state.itemSort;
         state.expandedCategories = new Set(Array.isArray(dashboard?.expandedCategories) ? dashboard.expandedCategories : []);
         state.filter = String(dashboard?.filter || "");
+        PERSISTENCE.hydrated = true;
         initializeDashboard();
+        RUNTIME.onChange(() => {
+            if (!state.dashboard) return;
+            if (RUNTIME.isTornPDA) void promotePdaStorage();
+            const previousMode = state.dashboard.dataset.runtime;
+            applyRuntimePresentation();
+            applySize();
+            applyCompactDetailLayout();
+            if (previousMode !== state.dashboard.dataset.runtime || state.activeTab === "settings") render();
+        });
     }
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void bootstrap());
     else void bootstrap();
