@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.4
+// @version      1.2.7
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -14,8 +14,10 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
 // @grant        GM.getValue
 // @grant        GM.setValue
+// @grant        GM.deleteValue
 // @grant        unsafeWindow
 // @connect      api.torn.com
 // @run-at       document-end
@@ -24,8 +26,12 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.4";
+    const VERSION = "1.2.7";
     const BASE_URL = "https://api.torn.com/v2/";
+    const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
+    const NATIVE_REMINDER_ID = 6321;
+    const BACKUP_SCHEMA = "naughty-inventory-companion-backup";
+    const BACKUP_VERSION = 1;
     const LOG_PREFIX = "[Naughty Inventory Companion]";
     const consoleEvent = (level, message, details = {}) => {
         try {
@@ -150,6 +156,94 @@
         };
     })();
     const RUNTIME_READY = RUNTIME.initialize();
+    const TAB_ACTIVITY = { documentVisible: document.visibilityState !== "hidden", nativeActive: true, nativeVisible: true, bound: false };
+    const activityWaiters = new Set();
+    function isTabActive() {
+        return TAB_ACTIVITY.documentVisible && (!RUNTIME.isTornPDA || (TAB_ACTIVITY.nativeActive && TAB_ACTIVITY.nativeVisible));
+    }
+    function updateTabActivity(next = {}) {
+        TAB_ACTIVITY.documentVisible = document.visibilityState !== "hidden";
+        if (typeof next.isActiveTab === "boolean") TAB_ACTIVITY.nativeActive = next.isActiveTab;
+        if (typeof next.isWebViewVisible === "boolean") TAB_ACTIVITY.nativeVisible = next.isWebViewVisible;
+        const active = isTabActive();
+        logDebug("Tab activity updated.", { active, documentVisible: TAB_ACTIVITY.documentVisible, nativeActive: TAB_ACTIVITY.nativeActive, nativeVisible: TAB_ACTIVITY.nativeVisible });
+        if (active) {
+            const waiters = [...activityWaiters];
+            activityWaiters.clear();
+            waiters.forEach((resolve) => resolve());
+        }
+        return active;
+    }
+    async function refreshNativeTabState() {
+        if (!RUNTIME.isTornPDA || !RUNTIME.flutterReady) return;
+        const bridge = getFlutterBridge();
+        if (!bridge) return;
+        try {
+            updateTabActivity(await bridge.callHandler("PDA_getTabState"));
+        } catch (error) {
+            logDebug("Native tab-state check was unavailable.", { category: safeErrorCategory(error) });
+        }
+    }
+    function bindTabActivity() {
+        if (TAB_ACTIVITY.bound) return;
+        TAB_ACTIVITY.bound = true;
+        document.addEventListener("visibilitychange", () => updateTabActivity());
+        window.addEventListener("tornpda:tabState", (event) => updateTabActivity(event.detail || {}));
+        window.addEventListener("pagehide", () => void flushPersistValues());
+        void refreshNativeTabState();
+    }
+    async function waitForActiveTab() {
+        while (!isTabActive()) {
+            state.status = "Refresh paused while this tab is inactive.";
+            render();
+            await new Promise((resolve) => activityWaiters.add(resolve));
+        }
+    }
+    function injectedPdaApiKey() {
+        const key = String(PDA_INJECTED_API_KEY || "").trim();
+        return key && key !== "_###PDA-APIKEY###_" ? key : "";
+    }
+    function adoptInjectedPdaApiKey() {
+        const key = RUNTIME.isTornPDA ? injectedPdaApiKey() : "";
+        if (!key) return false;
+        state.apiKey = key;
+        state.apiKeySource = "tornpda";
+        return true;
+    }
+    function nativeBridgeCall(handler, payload) {
+        const bridge = getFlutterBridge();
+        if (!RUNTIME.isTornPDA || !RUNTIME.flutterReady || !bridge) return Promise.reject(new Error("TornPDA native handler is unavailable"));
+        return bridge.callHandler(handler, payload);
+    }
+    function nativeToast(text, tone = "blue") {
+        if (!text || !RUNTIME.isTornPDA) return;
+        const colors = {
+            blue: { a: 255, r: 28, g: 86, b: 136 },
+            green: { a: 255, r: 25, g: 109, b: 81 },
+            red: { a: 255, r: 135, g: 51, b: 61 }
+        };
+        void nativeBridgeCall("showToast", {
+            text: String(text), clickClose: true, seconds: 4,
+            bgColor: colors[tone] || colors.blue,
+            textColor: { a: 255, r: 255, g: 255, b: 255 }
+        }).catch((error) => logDebug("Native toast was unavailable.", { category: safeErrorCategory(error) }));
+    }
+    async function scheduleNativeReminder() {
+        const timestamp = Date.now() + 86400000;
+        await nativeBridgeCall("scheduleNotification", {
+            title: "Naughty Inventory Companion",
+            subtitle: "Your inventory snapshot is ready to refresh.",
+            id: NATIVE_REMINDER_ID,
+            timestamp,
+            overwriteID: true,
+            launchNativeToast: true,
+            toastMessage: "Inventory refresh reminder scheduled.",
+            toastColor: "green",
+            toastDurationSeconds: 4,
+            urlCallback: "https://www.torn.com/item.php"
+        });
+        return timestamp;
+    }
     const INVENTORY_CATEGORIES = [
         "medical", "drug", "booster", "alcohol", "candy", "enhancer", "jewelry",
         "plushie", "flower", "temporary", "clothing", "car", "artifact", "book",
@@ -173,11 +267,14 @@
         key: "NIC_TORN_API_KEY",
         dashboard: "NIC_DASHBOARD_STATE",
         position: "NIC_WIDGET_POSITION",
-        inventory: "NIC_INVENTORY_CACHE"
+        inventory: "NIC_INVENTORY_CACHE",
+        legacyStorage: "NIC_USE_LEGACY_GM_STORAGE"
     };
     const STORAGE_KEYS = Object.values(STORAGE);
     const state = {
         apiKey: "",
+        savedApiKey: "",
+        apiKeySource: "saved",
         activeTab: "inventory",
         theme: "dark",
         isMinimized: false,
@@ -198,6 +295,10 @@
         pdaCache: Object.create(null),
         pdaEnabled: false,
         pdaQuotaExceeded: false,
+        forceLegacyGM: false,
+        pendingValues: Object.create(null),
+        pendingResolvers: [],
+        persistTimer: 0,
         hydrated: false
     };
     let filterRenderTimer = 0;
@@ -281,6 +382,13 @@
         } catch {}
         return false;
     }
+    function localDelete(key) {
+        try {
+            window.localStorage?.removeItem(key);
+            return true;
+        } catch {}
+        return false;
+    }
     async function legacyGet(key, fallback) {
         const value = await gmGet(key, undefined);
         return value === undefined ? localGet(key, fallback) : value;
@@ -288,6 +396,11 @@
     async function legacySetValues(values) {
         await Promise.all(Object.entries(values).map(async ([key, value]) => {
             if (!await gmSet(key, value)) localSet(key, value);
+        }));
+    }
+    async function legacyDeleteKeys(keys) {
+        await Promise.all(keys.map(async (key) => {
+            if (!await gmDelete(key)) localDelete(key);
         }));
     }
     async function legacyValues() {
@@ -307,6 +420,19 @@
             return isStorageRecord(values) ? values : {};
         }
         return {};
+    }
+    async function gmDelete(key) {
+        try {
+            if (typeof GM !== "undefined" && typeof GM.deleteValue === "function") {
+                await GM.deleteValue(key);
+                return true;
+            }
+            if (typeof GM_deleteValue === "function") {
+                await Promise.resolve(GM_deleteValue(key));
+                return true;
+            }
+        } catch {}
+        return false;
     }
     async function writePdaValues(values) {
         const entries = Object.entries(values);
@@ -328,9 +454,86 @@
             return false;
         }
     }
-    async function persistValues(values) {
-        if (await writePdaValues(values)) return;
+    async function persistNow(values) {
+        if (PERSISTENCE.forceLegacyGM) {
+            await legacySetValues(values);
+            return false;
+        }
+        if (await writePdaValues(values)) return true;
         await legacySetValues(values);
+        return false;
+    }
+    async function flushPersistValues() {
+        if (PERSISTENCE.persistTimer) {
+            window.clearTimeout(PERSISTENCE.persistTimer);
+            PERSISTENCE.persistTimer = 0;
+        }
+        const values = PERSISTENCE.pendingValues;
+        const resolvers = PERSISTENCE.pendingResolvers;
+        PERSISTENCE.pendingValues = Object.create(null);
+        PERSISTENCE.pendingResolvers = [];
+        if (!Object.keys(values).length) {
+            resolvers.forEach((resolve) => resolve(false));
+            return false;
+        }
+        const nativeSaved = await persistNow(values);
+        logDebug("Storage write batch flushed.", { keys: Object.keys(values).length, nativeSaved });
+        resolvers.forEach((resolve) => resolve(nativeSaved));
+        return nativeSaved;
+    }
+    function persistValues(values, immediate = false) {
+        Object.assign(PERSISTENCE.pendingValues, values);
+        if (immediate) return flushPersistValues();
+        return new Promise((resolve) => {
+            PERSISTENCE.pendingResolvers.push(resolve);
+            if (PERSISTENCE.persistTimer) return;
+            PERSISTENCE.persistTimer = window.setTimeout(() => void flushPersistValues(), 180);
+        });
+    }
+    async function deletePdaKeys(keys) {
+        const storage = PERSISTENCE.pdaStorage;
+        if (!PERSISTENCE.pdaEnabled || !storage || typeof storage.delete !== "function") return false;
+        try {
+            await Promise.all(keys.map((key) => storage.delete(key)));
+            keys.forEach((key) => delete PERSISTENCE.pdaCache[key]);
+            return true;
+        } catch (error) {
+            logWarn("PDA_storage delete failed; userscript storage fallback will be used.", { keys: keys.length, category: safeErrorCategory(error) });
+            return false;
+        }
+    }
+    async function deletePersistedValues(keys) {
+        await flushPersistValues();
+        if (!PERSISTENCE.forceLegacyGM) await deletePdaKeys(keys);
+        await legacyDeleteKeys(keys);
+    }
+    function resolveLegacyStoragePreference(legacyValue, pdaValue) {
+        return legacyValue === undefined ? pdaValue === true : legacyValue === true;
+    }
+    async function setLegacyStoragePreference(enabled) {
+        await flushPersistValues();
+        const useLegacy = enabled === true;
+        const migration = currentStoredValues();
+        PERSISTENCE.forceLegacyGM = useLegacy;
+        await legacySetValues(useLegacy
+            ? { ...migration, [STORAGE.legacyStorage]: true }
+            : { [STORAGE.legacyStorage]: false });
+        if (PERSISTENCE.pdaEnabled && !PERSISTENCE.pdaQuotaExceeded) {
+            await writePdaValues(useLegacy
+                ? { [STORAGE.legacyStorage]: true }
+                : { ...migration, [STORAGE.legacyStorage]: false });
+        }
+        logInfo("Storage method preference updated.", {
+            storageMethod: useLegacy ? "legacy-gm" : "pda-storage",
+            pdaAvailable: PERSISTENCE.pdaEnabled,
+            migrationKeys: useLegacy ? 0 : Object.keys(migration).length
+        });
+    }
+    function storageMethodLabel() {
+        if (PERSISTENCE.forceLegacyGM) return "Legacy GM storage (selected)";
+        if (PERSISTENCE.pdaEnabled && !PERSISTENCE.pdaQuotaExceeded) return "TornPDA PDA_storage";
+        if (PERSISTENCE.pdaEnabled && PERSISTENCE.pdaQuotaExceeded) return "Legacy GM fallback (PDA_storage quota full)";
+        return "Legacy GM storage fallback";
     }
     async function loadStoredValues() {
         const storage = getPdaStorage();
@@ -340,8 +543,20 @@
                 PERSISTENCE.pdaStorage = storage;
                 PERSISTENCE.pdaCache = await readPdaCache(storage);
                 PERSISTENCE.pdaEnabled = true;
+                const legacy = await legacyValues();
+                PERSISTENCE.forceLegacyGM = resolveLegacyStoragePreference(
+                    legacy[STORAGE.legacyStorage],
+                    PERSISTENCE.pdaCache[STORAGE.legacyStorage]
+                );
+                if (PERSISTENCE.forceLegacyGM) {
+                    logInfo("Legacy GM storage is selected.", { nativeStorageAvailable: true });
+                    return Object.fromEntries(STORAGE_KEYS.map((key) => [
+                        key,
+                        legacy[key] === undefined ? PERSISTENCE.pdaCache[key] : legacy[key]
+                    ]));
+                }
                 const missing = STORAGE_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key));
-                const fallback = missing.length ? await legacyValues() : {};
+                const fallback = missing.length ? legacy : {};
                 const migration = Object.fromEntries(missing
                     .filter((key) => fallback[key] !== undefined)
                     .map((key) => [key, fallback[key]]));
@@ -359,10 +574,12 @@
             PERSISTENCE.pdaEnabled = false;
         }
         logInfo("Using userscript storage fallback.", { nativeStorageAvailable: Boolean(storage) });
-        return legacyValues();
+        const legacy = await legacyValues();
+        PERSISTENCE.forceLegacyGM = legacy[STORAGE.legacyStorage] === true;
+        return legacy;
     }
     async function promotePdaStorage() {
-        if (!PERSISTENCE.hydrated || PERSISTENCE.pdaEnabled) return;
+        if (!PERSISTENCE.hydrated || PERSISTENCE.pdaEnabled || PERSISTENCE.forceLegacyGM) return;
         const storage = getPdaStorage();
         if (!storage || (typeof storage.loadAll !== "function" && typeof storage.getMany !== "function")) return;
         try {
@@ -518,6 +735,11 @@
     }
     async function fetchInventory() {
         if (!state.apiKey || state.refreshInFlight || state.isMinimized) return;
+        if (!isTabActive()) {
+            state.status = "Refresh paused while this tab is inactive.";
+            render();
+            return;
+        }
         const refreshStartedAt = window.performance?.now?.() ?? Date.now();
         state.refreshInFlight = true;
         state.error = "";
@@ -529,8 +751,9 @@
         try {
             const [priceMap, equipmentMaps] = await Promise.all([fetchPriceMap(), fetchEquipmentMaps()]);
             for (let index = 0; index < INVENTORY_CATEGORIES.length; index += 1) {
+                await waitForActiveTab();
                 const category = INVENTORY_CATEGORIES[index];
-                state.status = "Fetching " + category + " (" + (index + 1) + "/" + INVENTORY_CATEGORIES.length + ")…";
+                state.status = "Fetching " + category + " (" + formatInteger(index + 1) + "/" + formatInteger(INVENTORY_CATEGORIES.length) + ")…";
                 render();
                 try {
                     const response = await requestJson(apiUrl("user/inventory", { cat: category }));
@@ -571,6 +794,7 @@
             };
             void persistValues({ [STORAGE.inventory]: state.inventory });
             state.status = "Live Torn market values loaded.";
+            nativeToast("Inventory refreshed: " + formatInteger(rows.length) + " items.", "green");
             logInfo("Manual inventory refresh completed.", {
                 items: rows.length,
                 failedCategories: failures.length,
@@ -579,6 +803,7 @@
         } catch (error) {
             state.error = error.message || "Unable to refresh inventory";
             state.status = "Refresh failed.";
+            nativeToast("Inventory refresh failed. See the dashboard for details.", "red");
             logError("Manual inventory refresh failed.", { category: safeErrorCategory(error), durationMs: elapsedMilliseconds(refreshStartedAt) });
         } finally {
             state.refreshInFlight = false;
@@ -672,7 +897,7 @@
             parentHeader("Category Value", "value") + parentHeader("Loaned", "loaned") + "</div>" +
             (groups.length ? groups.map((group) => {
                 const expanded = state.expandedCategories.has(group.category);
-                const loaned = LOANABLE_CATEGORIES.has(group.category) ? String(group.loaned) : "—";
+                const loaned = LOANABLE_CATEGORIES.has(group.category) ? formatInteger(group.loaned) : "—";
                 return "<section class='nic-category' data-category='" + escapeHtml(group.category) + "'><button class='nic-category-row' data-toggle-category='" +
                     escapeHtml(group.category) + "'><div class='nic-category-name'><span class='nic-caret'>" + (expanded ? "⌄" : "›") +
                     "</span>" + escapeHtml(group.category) + "</div><div>" + formatInteger(group.distinctItems) + "</div><div>" +
@@ -681,16 +906,19 @@
             }).join("") : "<div class='nic-empty'>No inventory rows match the current filter.</div>") + "</section></section>";
     }
     function settingsView() {
-        const storageLabel = PERSISTENCE.pdaEnabled
-            ? (PERSISTENCE.pdaQuotaExceeded ? "TornPDA storage is full; userscript storage is keeping new changes safe." : "TornPDA per-script storage is active.")
-            : "Userscript storage fallback is active.";
+        const runtime = runtimeInfo();
+        const usingInjectedKey = state.apiKeySource === "tornpda";
         return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Native TornPDA confirmation and viewport mode are checked independently'><span>Runtime</span><strong>" + runtimeInfo().label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
             "<label for='nic-api-key'>Torn API Key</label><div class='nic-key-row'><input id='nic-api-key' type='password' autocomplete='off' value='" +
-            escapeHtml(state.apiKey) + "' placeholder='Enter Torn API key'><button data-action='save-key'>Save Key</button></div>" +
+            escapeHtml(usingInjectedKey ? "" : state.savedApiKey) + "' placeholder='" + (usingInjectedKey ? "Using TornPDA injected API key" : "Enter Torn API key") + "'><button data-action='save-key'>Save Key</button></div>" +
+            (usingInjectedKey ? "<p class='nic-key-source'>A TornPDA injected API key is active and is never shown or stored by this companion.</p>" : "") +
             "<p>Inventory is manual-refresh only. Each refresh retrieves the current Torn item catalog market price, inventory categories, and equipped item bonuses/mods.</p>" +
-            "<p>Storage: " + storageLabel + "</p>" +
+            "<dl class='nic-runtime-details'><div><dt>Runtime</dt><dd>" + escapeHtml(runtime.platform) + " / " + escapeHtml(runtime.mode) + " view</dd></div><div><dt>Screen Size</dt><dd>" + escapeHtml(screenSizeLabel()) + "</dd></div><div><dt>Storage Method</dt><dd>" + escapeHtml(storageMethodLabel()) + "</dd></div></dl>" +
+            "<label class='nic-storage-toggle'><input id='nic-use-legacy-gm' type='checkbox'" + (PERSISTENCE.forceLegacyGM ? " checked" : "") + "><span>Use legacy GM storage</span></label>" +
+            "<p class='nic-storage-help'>Unchecked uses TornPDA PDA_storage when available, with compatible GM storage as the fallback.</p>" +
+            "<section class='nic-backup'><strong>Backup &amp; restore</strong><p>Download all local snapshots, history, preferences, and layout as a JSON backup. Loading a valid backup replaces this companion’s local data.</p><label class='nic-storage-toggle'><input id='nic-backup-include-key' type='checkbox'><span>Include saved API key</span></label><div class='nic-backup-actions'><button data-action='download-backup'>Download Backup</button><button data-action='choose-backup'>Load Backup</button><input id='nic-backup-file' type='file' accept='application/json,.json' hidden></div></section>" +
             "<div class='nic-setting-actions'><button data-action='toggle-theme'>Use " + (state.theme === "dark" ? "Light" : "Dark") + " Mode</button>" +
-            "<button data-action='clear-cache'>Clear Cached Inventory</button></div></section>";
+            "<button data-action='clear-cache'>Clear Cached Inventory</button><button data-action='native-reminder'>Remind Me Tomorrow</button></div></section>";
     }
     function dashboardStateValue() {
         return {
@@ -700,12 +928,104 @@
         };
     }
     function currentStoredValues() {
-        return {
-            [STORAGE.key]: state.apiKey,
+        const values = {
+            [STORAGE.key]: state.savedApiKey,
             [STORAGE.dashboard]: dashboardStateValue(),
-            [STORAGE.position]: state.position,
-            [STORAGE.inventory]: state.inventory
+            [STORAGE.position]: state.position
         };
+        if (state.inventory !== null) values[STORAGE.inventory] = state.inventory;
+        return values;
+    }
+    function createBackup(includeApiKey = false) {
+        const data = { ...currentStoredValues(), [STORAGE.legacyStorage]: PERSISTENCE.forceLegacyGM };
+        if (!includeApiKey) delete data[STORAGE.key];
+        return { schema: BACKUP_SCHEMA, version: BACKUP_VERSION, createdAt: Date.now(), includesApiKey: includeApiKey === true, data };
+    }
+    function validateBackup(candidate) {
+        if (!isStorageRecord(candidate) || candidate.schema !== BACKUP_SCHEMA || candidate.version !== BACKUP_VERSION || !isStorageRecord(candidate.data)) {
+            throw new Error("This is not a compatible Naughty Inventory Companion backup.");
+        }
+        const data = Object.fromEntries(Object.entries(candidate.data).filter(([key]) => STORAGE_KEYS.includes(key)));
+        const includesApiKey = candidate.includesApiKey === true;
+        if (!includesApiKey) delete data[STORAGE.key];
+        if (!Object.keys(data).length) throw new Error("The backup contains no compatible companion data.");
+        if (Object.prototype.hasOwnProperty.call(data, STORAGE.key) && typeof data[STORAGE.key] !== "string") throw new Error("The backup API key is invalid.");
+        if (Object.prototype.hasOwnProperty.call(data, STORAGE.dashboard) && !isStorageRecord(data[STORAGE.dashboard])) throw new Error("The backup dashboard state is invalid.");
+        if (Object.prototype.hasOwnProperty.call(data, STORAGE.position) && data[STORAGE.position] !== null && !isStorageRecord(data[STORAGE.position])) throw new Error("The backup panel position is invalid.");
+        if (Object.prototype.hasOwnProperty.call(data, STORAGE.inventory) && data[STORAGE.inventory] !== null && !isStorageRecord(data[STORAGE.inventory])) throw new Error("The backup inventory snapshot is invalid.");
+        if (Object.prototype.hasOwnProperty.call(data, STORAGE.legacyStorage) && typeof data[STORAGE.legacyStorage] !== "boolean") throw new Error("The backup storage preference is invalid.");
+        return { data, includesApiKey };
+    }
+    function downloadBackup(includeApiKey) {
+        const json = JSON.stringify(createBackup(includeApiKey), null, 2);
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "naughty-inventory-companion-backup-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        state.status = "Inventory backup downloaded.";
+        nativeToast(state.status, "green");
+        render();
+    }
+    async function readBackupFile(file) {
+        if (!file) throw new Error("Choose a backup file first.");
+        if (Number(file.size || 0) > 25 * 1024 * 1024) throw new Error("Backup files must be 25 MB or smaller.");
+        if (typeof file.text === "function") return file.text();
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("Unable to read that backup file."));
+            reader.readAsText(file);
+        });
+    }
+    async function restoreBackup(backup) {
+        await flushPersistValues();
+        const data = backup.data;
+        const retainedApiKey = state.savedApiKey;
+        const restoreKeys = STORAGE_KEYS.filter((key) => key !== STORAGE.key || backup.includesApiKey);
+        await deletePdaKeys(restoreKeys);
+        await legacyDeleteKeys(restoreKeys);
+        const useLegacy = data[STORAGE.legacyStorage] === true;
+        PERSISTENCE.forceLegacyGM = useLegacy;
+        const values = { ...data };
+        delete values[STORAGE.legacyStorage];
+        if (!backup.includesApiKey) delete values[STORAGE.key];
+        if (Object.keys(values).length) await persistNow(values);
+        await legacySetValues({ [STORAGE.legacyStorage]: useLegacy });
+        if (PERSISTENCE.pdaEnabled && !PERSISTENCE.pdaQuotaExceeded) await writePdaValues({ [STORAGE.legacyStorage]: useLegacy });
+        const dashboard = isStorageRecord(data[STORAGE.dashboard]) ? data[STORAGE.dashboard] : {};
+        state.savedApiKey = backup.includesApiKey ? String(data[STORAGE.key] || "") : retainedApiKey;
+        state.apiKey = state.savedApiKey;
+        state.apiKeySource = "saved";
+        adoptInjectedPdaApiKey();
+        state.theme = dashboard.theme === "light" ? "light" : "dark";
+        state.isMinimized = dashboard.isMinimized === true;
+        state.windowSizes = isStorageRecord(dashboard.windowSizes) ? dashboard.windowSizes : {};
+        state.position = data[STORAGE.position] ?? null;
+        state.inventory = data[STORAGE.inventory] ?? null;
+        state.parentSort = dashboard.parentSort?.key ? dashboard.parentSort : state.parentSort;
+        state.itemSort = dashboard.itemSort?.key ? dashboard.itemSort : state.itemSort;
+        state.expandedCategories = new Set(Array.isArray(dashboard.expandedCategories) ? dashboard.expandedCategories : []);
+        state.filter = String(dashboard.filter || "");
+        state.activeTab = "settings";
+        state.status = "Backup restored.";
+        state.error = "";
+        applyWidgetView();
+        nativeToast(state.status, "green");
+        render();
+    }
+    async function loadBackupFile(file) {
+        const text = await readBackupFile(file);
+        let parsed;
+        try { parsed = JSON.parse(text); } catch { throw new Error("The selected file is not valid JSON."); }
+        const backup = validateBackup(parsed);
+        if (typeof window.confirm === "function" && !window.confirm("Restore this Inventory backup? Current local companion data will be replaced.")) return false;
+        await restoreBackup(backup);
+        return true;
     }
     function saveDashboardState() {
         void persistValues({ [STORAGE.dashboard]: dashboardStateValue() });
@@ -721,6 +1041,12 @@
             left: Math.max(0, Math.round(viewport?.offsetLeft || 0)),
             top: Math.max(0, Math.round(viewport?.offsetTop || 0))
         };
+    }
+    function screenSizeLabel() {
+        const viewport = getViewportMetrics();
+        const orientation = viewport.width >= viewport.height ? "landscape" : "portrait";
+        const scale = Math.round((Number(window.visualViewport?.scale) || 1) * 100);
+        return formatInteger(viewport.width) + " × " + formatInteger(viewport.height) + " · " + orientation + " · " + formatInteger(scale) + "%";
     }
     function runtimeInfo() {
         const viewport = getViewportMetrics();
@@ -897,10 +1223,15 @@
         });
         content.querySelector("[data-action='refresh']")?.addEventListener("click", () => void fetchInventory());
         content.querySelector("[data-action='save-key']")?.addEventListener("click", () => {
-            state.apiKey = content.querySelector("#nic-api-key").value.trim();
-            state.status = state.apiKey ? "API key saved. Inventory refresh is manual-only." : "Manual refresh only.";
+            state.savedApiKey = content.querySelector("#nic-api-key").value.trim();
+            if (!adoptInjectedPdaApiKey()) {
+                state.apiKey = state.savedApiKey;
+                state.apiKeySource = "saved";
+            }
+            state.status = state.apiKey ? (state.apiKeySource === "tornpda" ? "TornPDA injected API key is active." : "API key saved. Inventory refresh is manual-only.") : "Manual refresh only.";
             state.error = "";
-            void persistValues({ [STORAGE.key]: state.apiKey });
+            void persistValues({ [STORAGE.key]: state.savedApiKey });
+            nativeToast(state.status, "green");
             render();
         });
         content.querySelector("[data-action='toggle-theme']")?.addEventListener("click", () => {
@@ -910,9 +1241,40 @@
         });
         content.querySelector("[data-action='clear-cache']")?.addEventListener("click", () => {
             state.inventory = null;
-            void persistValues({ [STORAGE.inventory]: null });
+            void deletePersistedValues([STORAGE.inventory]);
             state.status = "Cached inventory cleared.";
+            nativeToast(state.status, "blue");
             render();
+        });
+        content.querySelector("#nic-use-legacy-gm")?.addEventListener("change", (event) => {
+            void setLegacyStoragePreference(event.target.checked).then(() => {
+                state.status = event.target.checked ? "Legacy GM storage selected." : "Preferred storage method restored.";
+                nativeToast(state.status, "blue");
+                render();
+            });
+        });
+        content.querySelector("[data-action='native-reminder']")?.addEventListener("click", () => {
+            void scheduleNativeReminder().then(() => {
+                state.status = "Native inventory reminder scheduled for tomorrow.";
+                nativeToast(state.status, "green");
+                render();
+            }).catch(() => {
+                state.status = "Native reminders are available in TornPDA.";
+                render();
+            });
+        });
+        content.querySelector("[data-action='download-backup']")?.addEventListener("click", () => {
+            downloadBackup(content.querySelector("#nic-backup-include-key")?.checked === true);
+        });
+        content.querySelector("[data-action='choose-backup']")?.addEventListener("click", () => content.querySelector("#nic-backup-file")?.click());
+        content.querySelector("#nic-backup-file")?.addEventListener("change", (event) => {
+            const file = event.target.files?.[0];
+            void loadBackupFile(file).catch((error) => {
+                state.error = error?.message || "Unable to restore that backup.";
+                state.status = "Backup restore failed.";
+                nativeToast(state.status, "red");
+                render();
+            });
         });
         content.querySelector("#nic-filter")?.addEventListener("input", (event) => {
             state.filter = event.target.value;
@@ -1135,11 +1497,11 @@
                 .nic-item-name{font-weight:800;color:#f7fbff;text-align:left!important}#nic-wrapper[data-theme='light'] .nic-item-name{color:#15283f}
                 .nic-equipped{display:inline-block;margin-left:5px;padding:2px 4px;border:1px solid #5289be;border-radius:4px;color:#a9deff;font-size:8px;font-weight:800;text-transform:uppercase}.nic-perks{color:#a9deff}.nic-mods{color:#d8b3ff}.nic-loaned{color:#f3bd72;font-weight:750}.nic-owned{color:#89dda2;font-weight:750}.nic-muted{color:#7890aa}
                 .nic-warning,.nic-error{padding:8px 10px;border-radius:8px;font-size:10px}.nic-warning{border:1px solid #9a7b3c;background:rgba(159,119,40,.18);color:#f3d18a}.nic-error{border:1px solid #a54d55;background:rgba(168,53,64,.2);color:#ffb9bf}
-                .nic-empty{padding:22px 10px;color:#aebed3;font-size:11px;text-align:center}.nic-settings{display:grid;gap:11px;align-content:start}.nic-card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.nic-card-title h2{margin:0;font-size:15px}.nic-runtime{display:flex;align-items:center;gap:5px;margin-top:3px;color:#9fb0c7;font-size:9px;font-weight:700}.nic-runtime strong{padding:2px 5px;border:1px solid #58769b;border-radius:999px;color:#a9deff;font-size:9px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions{display:flex;gap:7px;flex-wrap:wrap}.nic-key-row input{flex:1 1 180px}.nic-settings p{margin:0;color:#aebed3;font-size:10px;line-height:1.5}
-                #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
+                .nic-empty{padding:22px 10px;color:#aebed3;font-size:11px;text-align:center}.nic-settings{display:grid;gap:11px;align-content:start}.nic-card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.nic-card-title h2{margin:0;font-size:15px}.nic-runtime{display:flex;align-items:center;gap:5px;margin-top:3px;color:#9fb0c7;font-size:9px;font-weight:700}.nic-runtime strong{padding:2px 5px;border:1px solid #58769b;border-radius:999px;color:#a9deff;font-size:9px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions,.nic-backup-actions{display:flex;gap:7px;flex-wrap:wrap}.nic-key-row input{flex:1 1 180px}.nic-settings p{margin:0;color:#aebed3;font-size:10px;line-height:1.5}.nic-runtime-details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0}.nic-runtime-details>div{min-width:0;padding:7px 8px;border:1px solid #344d6b;border-radius:8px;background:rgba(20,35,55,.68)}.nic-runtime-details dt{margin:0 0 3px;color:#8fa4be;font-size:8px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}.nic-runtime-details dd{margin:0;overflow-wrap:anywhere;color:#e3efff;font-size:10px;font-weight:750;line-height:1.3}.nic-storage-toggle{display:flex;align-items:center;gap:7px;width:max-content;max-width:100%;color:#dcecff}.nic-storage-toggle input{width:15px;height:15px;accent-color:#4dd3be}.nic-storage-help{margin-top:-5px!important}.nic-backup{display:grid;gap:8px;padding:9px;border:1px solid #344d6b;border-radius:8px;background:rgba(20,35,55,.48)}.nic-backup>strong{font-size:11px}.nic-backup-actions button{flex:1 1 135px}
+                #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p,#nic-wrapper[data-theme='light'] .nic-runtime-details dt{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}#nic-wrapper[data-theme='light'] .nic-runtime-details>div,#nic-wrapper[data-theme='light'] .nic-backup{background:#d8e4ef;border-color:#96aabe}#nic-wrapper[data-theme='light'] .nic-runtime-details dd,#nic-wrapper[data-theme='light'] .nic-storage-toggle{color:#203650}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize::after{content:'';position:absolute;width:9px;height:9px;pointer-events:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='top-left']::after{left:4px;top:4px;border-left:2px solid #7793bb;border-top:2px solid #7793bb}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-left']::after{left:4px;bottom:4px;border-left:2px solid #7793bb;border-bottom:2px solid #7793bb}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-right']::after{right:4px;bottom:4px;border-right:2px solid #7793bb;border-bottom:2px solid #7793bb}
                 #nic-wrapper[data-runtime='compact'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='compact'] button{min-height:38px}#nic-wrapper[data-runtime='compact'] #nic-body{padding:8px}#nic-wrapper[data-runtime='compact'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='compact'] .nic-summary-card{padding:8px}
-                #nic-wrapper[data-narrow='true'] .nic-card-title{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-card-title>div{flex:1 1 150px}#nic-wrapper[data-narrow='true'] .nic-card-title>button{margin-left:auto}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline span{grid-column:1/-1;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}#nic-wrapper[data-narrow='true'] .nic-toolbar{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-toolbar input{width:auto;flex:1 1 170px}#nic-wrapper[data-narrow='true'] .nic-toolbar span{flex:1 1 100%}#nic-wrapper[data-narrow='true'] .nic-key-row,#nic-wrapper[data-narrow='true'] .nic-setting-actions{display:grid;grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-key-row input{min-height:38px}#nic-wrapper[data-narrow='true'] .nic-compact-sort,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-compact-sort>span,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort>span{flex:1 0 100%}#nic-wrapper[data-narrow='true'] .nic-compact-sort select,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort select{flex:1 1 120px}
+                #nic-wrapper[data-narrow='true'] .nic-card-title{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-card-title>div{flex:1 1 150px}#nic-wrapper[data-narrow='true'] .nic-card-title>button{margin-left:auto}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline span{grid-column:1/-1;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}#nic-wrapper[data-narrow='true'] .nic-toolbar{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-toolbar input{width:auto;flex:1 1 170px}#nic-wrapper[data-narrow='true'] .nic-toolbar span{flex:1 1 100%}#nic-wrapper[data-narrow='true'] .nic-key-row,#nic-wrapper[data-narrow='true'] .nic-setting-actions,#nic-wrapper[data-narrow='true'] .nic-backup-actions{display:grid;grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-key-row input{min-height:38px}#nic-wrapper[data-narrow='true'] .nic-runtime-details{grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-compact-sort,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-compact-sort>span,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort>span{flex:1 0 100%}#nic-wrapper[data-narrow='true'] .nic-compact-sort select,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort select{flex:1 1 120px}
                 #nic-wrapper[data-narrow='true'] .nic-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#nic-wrapper[data-tiny='true'] .nic-summary-grid{grid-template-columns:1fr}#nic-wrapper[data-tiny='true'][data-compact='true'] .nic-category-row{grid-template-columns:1fr!important}#nic-wrapper[data-tiny='true'] .nic-runtime{flex-wrap:wrap}
                 #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
                 #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
@@ -1167,7 +1529,10 @@
         await RUNTIME_READY;
         const stored = await loadStoredValues();
         const dashboard = stored[STORAGE.dashboard];
-        state.apiKey = String(stored[STORAGE.key] || "").trim();
+        state.savedApiKey = String(stored[STORAGE.key] || "").trim();
+        state.apiKey = state.savedApiKey;
+        state.apiKeySource = "saved";
+        adoptInjectedPdaApiKey();
         state.activeTab = ["inventory", "settings"].includes(dashboard?.activeTab) ? dashboard.activeTab : "inventory";
         state.theme = dashboard?.theme === "light" ? "light" : "dark";
         state.isMinimized = dashboard?.isMinimized === true;
@@ -1179,6 +1544,7 @@
         state.expandedCategories = new Set(Array.isArray(dashboard?.expandedCategories) ? dashboard.expandedCategories : []);
         state.filter = String(dashboard?.filter || "");
         PERSISTENCE.hydrated = true;
+        bindTabActivity();
         const startupRuntime = runtimeInfo();
         const startupViewport = getViewportMetrics();
         logInfo("Startup complete.", {
@@ -1187,12 +1553,18 @@
             view: startupRuntime.mode,
             tornPDAConfirmed: RUNTIME.isTornPDA,
             viewport: startupViewport.width + "x" + startupViewport.height,
-            scale: Number(window.visualViewport?.scale) || 1
+            scale: Number(window.visualViewport?.scale) || 1,
+            storageMethod: storageMethodLabel(),
+            apiKeySource: state.apiKeySource
         });
         initializeDashboard();
         RUNTIME.onChange(() => {
             if (!state.dashboard) return;
             if (RUNTIME.isTornPDA) void promotePdaStorage();
+            if (RUNTIME.isTornPDA) {
+                adoptInjectedPdaApiKey();
+                void refreshNativeTabState();
+            }
             const previousMode = state.dashboard.dataset.runtime;
             applyRuntimePresentation();
             applySize();
@@ -1202,6 +1574,11 @@
             if (previousMode !== state.dashboard.dataset.runtime || state.activeTab === "settings") render();
         });
     }
-    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void bootstrap());
+    if (globalThis.__NIC_STORAGE_TEST__) {
+        globalThis.__NIC_STORAGE_TEST__.hooks = {
+            STORAGE, PERSISTENCE, loadStoredValues, persistValues, flushPersistValues,
+            deletePersistedValues, resolveLegacyStoragePreference, createBackup, validateBackup
+        };
+    } else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void bootstrap());
     else void bootstrap();
 })();

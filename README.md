@@ -49,7 +49,19 @@ On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA,
 
 The companion gives TornPDA's native, per-script `PDA_storage` priority over Tampermonkey storage. It reads the native namespace once at startup (using `loadAll` or `getMany` when provided), keeps a local cache, and batches writes. Existing GM/local values are migrated only for native keys that do not yet exist, so a newer TornPDA value takes precedence. If native storage is absent, unavailable, or reaches its quota, the script continues with compatible GM/local storage; the Settings screen reports which store is active. A late native-runtime confirmation can also promote already loaded compatibility data into `PDA_storage` without losing it.
 
+Settings also shows the active runtime, current visual screen size, and storage method. **Use legacy GM storage** is unchecked by default. Selecting it makes the compatible GM/local store primary; turning it off migrates the current state back to available `PDA_storage` and restores it as the preferred store.
+
+Repeated dashboard saves are merged into a short write queue, then written with one native `setMany` call. The adapter tests cover native-first reads, one-time GM migration, quota fallback, batched writes, and native/GM deletion.
+
 Native TornPDA detection is bridge-confirmed: the script waits for `flutterInAppWebViewPlatformReady` and checks `isTornPDA`. User-agent hints help it decide whether to wait for that bridge but do not independently identify the runtime. Viewport compactness is a separate decision: confirmed TornPDA, or a constrained desktop viewport, receives the full-viewport safe-area-aware compact layout; normal desktop retains draggable, resizable behavior. Requests prefer the declared GM network APIs and use native `PDA_httpGet` only when the confirmed native bridge is available.
+
+## TornPDA-native feedback
+
+When TornPDA injects its API key, the companion uses it without displaying or persisting it; a saved key remains the desktop fallback. Refresh success, errors, setting changes, and the optional **Remind Me Tomorrow** action use TornPDA native toast/notification handlers when available. Refresh work pauses between API calls while the page or TornPDA tab is inactive and resumes when it becomes active again. Desktop retains the in-panel status feedback.
+
+## Backup & restore
+
+Settings can download a versioned JSON backup containing the local inventory snapshot, display preferences, sorting, filters, layout, and storage preference. **Include saved API key** is off by default; TornPDA’s injected key is never exported. Loading a backup validates its companion schema, asks before replacing local companion data, and restores through the currently selected `PDA_storage` or legacy GM storage backend.
 
 ## Diagnostics
 
