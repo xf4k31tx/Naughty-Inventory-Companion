@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
-// @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.8
+// @namespace    https://github.com/SharpSplinter/Naughty-Inventory-Companion
+// @version      1.2.10
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
-// @author       sharpsplinter [315311]
+// @author       SharpSplinter [315311]
 // @match        https://www.torn.com/item.php*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @match        https://www.torn.com/bazaar.php*
-// @source       https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
-// @updateURL    https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
-// @downloadURL  https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
+// @source       https://raw.githubusercontent.com/SharpSplinter/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
+// @updateURL    https://raw.githubusercontent.com/SharpSplinter/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
+// @downloadURL  https://raw.githubusercontent.com/SharpSplinter/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
@@ -26,7 +26,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.8";
+    const VERSION = "1.2.10";
     const BASE_URL = "https://api.torn.com/v2/";
     const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
     const NATIVE_REMINDER_ID = 6321;
@@ -1078,15 +1078,18 @@
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
     async function shareInventoryExport(bytes, fileName) {
-        if (!RUNTIME.isTornPDA || !RUNTIME.flutterReady) return false;
+        await RUNTIME_READY;
+        const bridge = getFlutterBridge();
+        if (!RUNTIME.isTornPDA || !bridge) return { native: false, shared: false };
         const base64Data = bytesToBase64(bytes);
-        if (!base64Data) return false;
+        if (!base64Data) return { native: true, shared: false, message: "This runtime could not encode the export." };
         try {
-            const response = await nativeBridgeCall("shareFile", { base64Data, fileName });
-            return response !== false && response?.success !== false && response?.status !== "error";
+            const response = await bridge.callHandler("shareFile", { base64Data, fileName });
+            if (response?.status === "success") return { native: true, shared: true };
+            return { native: true, shared: false, message: String(response?.message || "TornPDA could not open its share sheet.") };
         } catch (error) {
             logDebug("Native inventory export share sheet was unavailable.", { category: safeErrorCategory(error) });
-            return false;
+            return { native: true, shared: false, message: "TornPDA could not open its share sheet." };
         }
     }
     async function exportInventory(format) {
@@ -1102,11 +1105,12 @@
             const fileName = inventoryExportFileName(isSpreadsheet ? "xlsx" : "csv");
             const mimeType = isSpreadsheet ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv;charset=utf-8";
             const bytes = isSpreadsheet ? createInventorySpreadsheet(data) : utf8Bytes(createInventoryCsv(data));
-            const shared = await shareInventoryExport(bytes, fileName);
-            if (!shared) downloadInventoryExport(bytes, fileName, mimeType);
-            state.status = shared ? label + " opened in the TornPDA share sheet." : label + " downloaded.";
+            const share = await shareInventoryExport(bytes, fileName);
+            if (share.native && !share.shared) throw new Error(share.message || "TornPDA could not open its share sheet.");
+            if (!share.shared) downloadInventoryExport(bytes, fileName, mimeType);
+            state.status = share.shared ? label + " opened in the TornPDA share sheet." : label + " downloaded.";
             nativeToast(state.status, "green");
-            logInfo("Inventory export completed.", { format: isSpreadsheet ? "xlsx" : "csv", transport: shared ? "TornPDA shareFile" : "desktop download", items: data.rows.length });
+            logInfo("Inventory export completed.", { format: isSpreadsheet ? "xlsx" : "csv", transport: share.shared ? "TornPDA shareFile" : "desktop download", items: data.rows.length });
         } catch (error) {
             state.status = "Inventory export failed.";
             state.error = "Unable to create the " + label.toLowerCase() + " export.";
@@ -1162,7 +1166,7 @@
             "<dl class='nic-runtime-details'><div><dt>Runtime</dt><dd>" + escapeHtml(runtime.platform) + " / " + escapeHtml(runtime.mode) + " view</dd></div><div><dt>Screen Size</dt><dd>" + escapeHtml(screenSizeLabel()) + "</dd></div><div><dt>Storage Method</dt><dd>" + escapeHtml(storageMethodLabel()) + "</dd></div></dl>" +
             "<label class='nic-storage-toggle'><input id='nic-use-legacy-gm' type='checkbox'" + (PERSISTENCE.forceLegacyGM ? " checked" : "") + "><span>Use legacy GM storage</span></label>" +
             "<p class='nic-storage-help'>Unchecked uses TornPDA PDA_storage when available, with compatible GM storage as the fallback.</p>" +
-            "<section class='nic-backup'><strong>Backup &amp; restore</strong><p>Download all local snapshots, history, preferences, and layout as a JSON backup. Loading a valid backup replaces this companion’s local data.</p><label class='nic-storage-toggle'><input id='nic-backup-include-key' type='checkbox'><span>Include saved API key</span></label><div class='nic-backup-actions'><button data-action='download-backup'>Download Backup</button><button data-action='choose-backup'>Load Backup</button><input id='nic-backup-file' type='file' accept='application/json,.json' hidden></div></section>" +
+            "<section class='nic-backup'><strong>Backup &amp; restore</strong><p>Download all local snapshots, history, preferences, and layout as a JSON backup. Loading a valid backup replaces this companion’s local data.</p><label class='nic-storage-toggle'><input id='nic-backup-include-key' type='checkbox'><span>Include saved API key</span></label><div class='nic-backup-actions'><button data-action='download-backup'" + (state.exportInFlight ? " disabled" : "") + ">Download Backup</button><button data-action='choose-backup'>Load Backup</button><input id='nic-backup-file' type='file' accept='application/json,.json' hidden></div></section>" +
             "<div class='nic-setting-actions'><button data-action='toggle-theme'>Use " + (state.theme === "dark" ? "Light" : "Dark") + " Mode</button>" +
             "<button data-action='clear-cache'>Clear Cached Inventory</button><button data-action='native-reminder'>Remind Me Tomorrow</button></div></section>";
     }
@@ -1202,20 +1206,34 @@
         if (Object.prototype.hasOwnProperty.call(data, STORAGE.legacyStorage) && typeof data[STORAGE.legacyStorage] !== "boolean") throw new Error("The backup storage preference is invalid.");
         return { data, includesApiKey };
     }
-    function downloadBackup(includeApiKey) {
+    async function downloadBackup(includeApiKey) {
+        if (state.exportInFlight) return false;
+        state.exportInFlight = true;
+        state.error = "";
+        state.status = "Preparing Inventory backup…";
+        render();
+        try {
         const json = JSON.stringify(createBackup(includeApiKey), null, 2);
-        const blob = new Blob([json], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "naughty-inventory-companion-backup-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
-        document.body.append(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-        state.status = "Inventory backup downloaded.";
+        const fileName = "naughty-inventory-companion-backup-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+        const bytes = utf8Bytes(json);
+        const share = await shareInventoryExport(bytes, fileName);
+        if (share.native && !share.shared) {
+            state.status = "Inventory backup was not exported.";
+            state.error = share.message || "TornPDA could not open the native share sheet.";
+            nativeToast(state.error, "red");
+            render();
+            return false;
+        }
+        if (!share.shared) downloadInventoryExport(bytes, fileName, "application/json;charset=utf-8");
+        state.status = share.shared ? "Inventory backup opened in the TornPDA share sheet." : "Inventory backup downloaded.";
+        state.error = "";
         nativeToast(state.status, "green");
         render();
+        return true;
+        } finally {
+            state.exportInFlight = false;
+            render();
+        }
     }
     async function readBackupFile(file) {
         if (!file) throw new Error("Choose a backup file first.");
@@ -1512,7 +1530,7 @@
             });
         });
         content.querySelector("[data-action='download-backup']")?.addEventListener("click", () => {
-            downloadBackup(content.querySelector("#nic-backup-include-key")?.checked === true);
+            void downloadBackup(content.querySelector("#nic-backup-include-key")?.checked === true);
         });
         content.querySelector("[data-action='choose-backup']")?.addEventListener("click", () => content.querySelector("#nic-backup-file")?.click());
         content.querySelector("#nic-backup-file")?.addEventListener("change", (event) => {

@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an improvement to Naughty Inventory Companion.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the player problem first. Do not include API keys or private inventory exports.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What makes the current experience difficult?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe what the companion should do and how it should look or behave.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Primary runtime affected
+      options:
+        - Desktop browser with Tampermonkey
+        - TornPDA on Android
+        - TornPDA on iOS
+        - All runtimes
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing requests and did not include private data.
+          required: true

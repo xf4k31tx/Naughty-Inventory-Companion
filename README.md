@@ -2,6 +2,10 @@
 
 Naughty Inventory Companion is a focused Torn inventory dashboard for Tampermonkey and TornPDA. It turns a manual inventory refresh into a searchable, sortable local snapshot with category totals, current catalog market prices, equipped-item details, and loan status.
 
+## Project goals
+
+This open-source userscript helps Torn players understand their own inventory without sending it to a separate companion service. Its goals are a clear local dashboard, reliable exports and backups, privacy-conscious API-key handling, and equal usability on desktop Tampermonkey and TornPDA. It is an independent community project and is not affiliated with Torn or TornPDA.
+
 ## What it does
 
 - Loads your Torn inventory categories and the official item catalog market-price snapshot on demand.
@@ -15,7 +19,7 @@ Naughty Inventory Companion is a focused Torn inventory dashboard for Tampermonk
 ## Installation
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or use TornPDA’s userscript support.
-2. Open the [raw userscript](https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js) and install it.
+2. Open the [raw userscript](https://raw.githubusercontent.com/SharpSplinter/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js) and install it.
 3. Reload Torn, then open the companion from its launcher.
 4. Open **Settings**, enter your Torn API key, and select **Save Key**.
 5. Return to **Inventory** and select **Refresh** when you want a new snapshot.
@@ -45,7 +49,7 @@ Values are an estimate based on the latest loaded catalog market price; they are
 
 The Inventory tab exports the complete stored snapshot, not just the currently filtered rows. **Save as CSV** creates a clean, spreadsheet-readable file with a snapshot summary and every item row. **Save as Spreadsheet** creates a formatted `.xlsx` workbook with numeric quantity/currency columns, a filterable item table, and readable widths for item details.
 
-On TornPDA, either action opens the native share sheet from the user’s tap. On desktop, it downloads the file locally. Exports remain local to the device until you choose a destination in the native share sheet.
+On TornPDA, either action opens the native share sheet from the user’s tap through `shareFile({ base64Data, fileName })`. On desktop, it downloads the file locally. Android and iOS use that system sheet to choose Files or another destination; it is not a browser save-location picker. Exports remain local to the device until you choose a destination in the native share sheet. If TornPDA reports a share failure, the companion reports that failure rather than incorrectly claiming a local download, and it prevents overlapping native share requests.
 
 ## Desktop and TornPDA
 
@@ -67,7 +71,7 @@ When TornPDA injects its API key, the companion uses it without displaying or pe
 
 ## Backup & restore
 
-Settings can download a versioned JSON backup containing the local inventory snapshot, display preferences, sorting, filters, layout, and storage preference. **Include saved API key** is off by default; TornPDA’s injected key is never exported. Loading a backup validates its companion schema, asks before replacing local companion data, and restores through the currently selected `PDA_storage` or legacy GM storage backend.
+Settings can download a versioned JSON backup containing the local inventory snapshot, display preferences, sorting, filters, layout, and storage preference. **Include saved API key** is off by default; TornPDA’s injected key is never exported. On TornPDA, backup download opens the native system share sheet; desktop uses a normal file download. Loading a backup validates its companion schema, asks before replacing local companion data, and restores through the currently selected `PDA_storage` or legacy GM storage backend.
 
 ## Diagnostics
 
@@ -82,6 +86,14 @@ Treat API keys as secrets. Revoke and replace any key you believe has been expos
 ## Updating
 
 Reopen the raw userscript URL above in your userscript manager to install the newest version. Existing local settings and cached data are retained unless you explicitly clear the cache.
+
+## Community and governance
+
+- [Contributing guidelines](CONTRIBUTING.md) explain how to propose code and documentation changes.
+- [Code of Conduct](CODE_OF_CONDUCT.md) sets expectations for every project space.
+- [Security policy](SECURITY.md) explains how to report a vulnerability privately.
+- Use the [bug report](https://github.com/SharpSplinter/Naughty-Inventory-Companion/issues/new?template=bug_report.yml) and [feature request](https://github.com/SharpSplinter/Naughty-Inventory-Companion/issues/new?template=feature_request.yml) forms for public feedback.
+- Source is available under the permissive [MIT License](LICENSE).
 
 ## Verify from source
 

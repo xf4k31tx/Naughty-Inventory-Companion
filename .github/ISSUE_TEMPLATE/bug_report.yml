@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible problem in Naughty Inventory Companion.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not include API keys, full backup files, or unredacted private inventory data.
+  - type: input
+    id: version
+    attributes:
+      label: Companion version
+      description: Copy the version shown in the companion header or userscript metadata.
+      placeholder: e.g. v1.2.9
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Desktop browser with Tampermonkey
+        - TornPDA on Android
+        - TornPDA on iOS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest safe sequence that reproduces the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Safe diagnostics or screenshots
+      description: Redact account information, API keys, request URLs, backup contents, and inventory values if private.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and removed private information.
+          required: true
+        - label: I understand security vulnerabilities must be reported privately under SECURITY.md.
+          required: true
