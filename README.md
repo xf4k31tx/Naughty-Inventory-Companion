@@ -43,7 +43,7 @@ Values are an estimate based on the latest loaded catalog market price; they are
 
 ## Desktop and TornPDA
 
-On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Narrow layouts reflow detailed rows and expose compact sorting controls instead of forcing tiny columns or horizontal clipping.
+On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Narrow layouts reflow detailed rows and expose compact sorting controls instead of forcing tiny columns or horizontal clipping. The panel body and category list are the only intentional scroll regions; their tracks are hidden while wheel, keyboard, and touch scrolling remain native.
 
 ## TornPDA compatibility and storage
 

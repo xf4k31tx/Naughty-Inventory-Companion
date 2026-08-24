@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.2
+// @version      1.2.3
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -24,7 +24,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.2";
+    const VERSION = "1.2.3";
     const BASE_URL = "https://api.torn.com/v2/";
     const LOG_PREFIX = "[Naughty Inventory Companion]";
     const consoleEvent = (level, message, details = {}) => {
@@ -1083,8 +1083,10 @@
                 #nic-minimize{display:grid;width:42px;height:36px;min-width:42px;flex:0 0 42px;place-items:center;border:1px solid #7793bb;border-radius:8px;background:#294564;color:#fff;font-size:21px;font-weight:750;line-height:1;cursor:pointer;touch-action:manipulation}
                 #nic-wrapper[data-theme='light'] #nic-minimize{background:#dce7f1;color:#1c2a3e;border-color:#718aa7}
                 #nic-minimize:hover,button:hover{filter:brightness(1.1);transform:translateY(-1px)}
-                #nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none;padding:10px;overscroll-behavior:contain}
-                #nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{display:none;width:0;height:0}
+                #nic-body{display:flex!important;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:10px;overscroll-behavior:contain}
+                #nic-body,.nic-category-table{scrollbar-width:none;scrollbar-color:transparent transparent;-ms-overflow-style:none;-webkit-overflow-scrolling:touch;touch-action:pan-y pinch-zoom}
+                #nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
+                #nic-body::-webkit-scrollbar-track,.nic-category-table::-webkit-scrollbar-track,#nic-body::-webkit-scrollbar-thumb,.nic-category-table::-webkit-scrollbar-thumb,#nic-body::-webkit-scrollbar-corner,.nic-category-table::-webkit-scrollbar-corner{background:transparent;border:0}
                 #nic-content{display:flex;flex:1 1 auto;flex-direction:column;gap:10px;min-height:0;width:100%}
                 button{min-height:32px;border:1px solid #526986;border-radius:8px;background:#294563;color:#f6f9ff;padding:6px 9px;font-size:11px;font-weight:750;line-height:1.1;cursor:pointer;transition:filter .15s ease,transform .15s ease;touch-action:manipulation}
                 button:disabled{opacity:.5;cursor:not-allowed;transform:none}
@@ -1105,7 +1107,7 @@
                 .nic-toolbar input,.nic-key-row input{width:100%;min-height:34px;min-width:0;border:1px solid #526986;border-radius:8px;background:#111b2a;color:#f4f8ff;padding:7px 9px;font-size:11px;outline:none}
                 .nic-toolbar input:focus,.nic-key-row input:focus{border-color:#8eb5e5;box-shadow:0 0 0 2px rgba(110,159,214,.22)}
                 #nic-wrapper[data-theme='light'] .nic-toolbar input,#nic-wrapper[data-theme='light'] .nic-key-row input{background:#e6edf4;color:#17263b;border-color:#8397ae}
-                .nic-category-table{width:100%;flex:1 1 auto;min-height:132px;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none;border:1px solid #40516d;border-radius:10px;background:rgba(8,13,22,.45);overscroll-behavior:contain;touch-action:pan-y}
+                .nic-category-table{width:100%;flex:1 1 auto;min-height:132px;overflow-y:auto;overflow-x:hidden;border:1px solid #40516d;border-radius:10px;background:rgba(8,13,22,.45);overscroll-behavior:contain}
                 #nic-wrapper[data-theme='light'] .nic-category-table{background:#d5e0eb;border-color:#8193a8}
                 .nic-parent-header,.nic-category-row{display:grid;grid-template-columns:minmax(130px,1.7fr) minmax(52px,.65fr) minmax(54px,.7fr) minmax(102px,1.1fr) minmax(56px,.55fr);gap:6px;align-items:center;width:100%}
                 .nic-parent-header{position:sticky;top:0;z-index:3;padding:7px;background:#263a57;border-bottom:1px solid #506887}
@@ -1142,7 +1144,7 @@
                 #nic-wrapper[data-compact='true'] .nic-item-row{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:0!important;padding:9px 7px;font-size:10px}#nic-wrapper[data-compact='true'] .nic-item-row>div:first-child{grid-column:auto;margin:0 0 5px;padding:0 0 6px;border-bottom:1px solid #283950}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child){display:flex;grid-column:auto;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;padding:4px 0;text-align:right!important}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:9px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-compact='true'] .nic-detail-value{min-width:0;overflow-wrap:anywhere;text-align:right}#nic-wrapper[data-compact='true'] .nic-perks,#nic-wrapper[data-compact='true'] .nic-mods{align-items:flex-start!important;line-height:1.35}#nic-wrapper[data-compact='true'] .nic-perks .nic-detail-value,#nic-wrapper[data-compact='true'] .nic-mods .nic-detail-value{padding-top:1px}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}#nic-wrapper[data-compact='true'][data-theme='light'] .nic-category-row>div:first-child,#nic-wrapper[data-compact='true'][data-theme='light'] .nic-item-row>div:first-child{border-color:#b1c0cf}
                 @media(max-width:600px){.nic-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.nic-summary-card span{font-size:8px}.nic-summary-card strong{font-size:14px}.nic-summary-card small{font-size:8px}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(0,1.35fr) minmax(0,.45fr) minmax(0,.5fr) minmax(0,1fr) minmax(0,.45fr);gap:3px;font-size:9px}.nic-parent-header{padding:6px 5px}.nic-category-row{padding:8px 5px}.nic-category-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nic-caret{width:12px}.nic-toolbar{gap:6px}.nic-toolbar span{display:none}.nic-key-row,.nic-setting-actions{display:grid;grid-template-columns:1fr}.nic-key-row input{min-height:38px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(80px,1.25fr) minmax(32px,.4fr) minmax(54px,.7fr) minmax(58px,.75fr) minmax(74px,1fr) minmax(62px,.9fr) minmax(42px,.5fr);gap:3px;font-size:8px}}
             </style>
-            <style>#nic-wrapper[data-runtime='compact'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='compact'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
+            <style>#nic-wrapper[data-runtime='compact'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}</style>
             <header id='nic-drag'><span id='nic-title'></span><button id='nic-minimize' aria-label='Minimize Naughty Inventory Companion'>−</button></header>
             <main id='nic-body'><div id='nic-content'></div></main>
             <i class='nic-resize' data-corner='top-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-right' title='Resize this tab'></i>`;
