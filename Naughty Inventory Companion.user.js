@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.1.2
+// @version      1.1.3
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -11,6 +11,9 @@
 // @updateURL    https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
 // @downloadURL  https://raw.githubusercontent.com/xf4k31tx/Naughty-Inventory-Companion/main/Naughty%20Inventory%20Companion.user.js
 // @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @connect      api.torn.com
@@ -20,7 +23,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.2";
+    const VERSION = "1.1.3";
     const BASE_URL = "https://api.torn.com/v2/";
     const RUNTIME = (() => {
         const userAgent = navigator.userAgent || "";
@@ -368,7 +371,7 @@
             }).join("") : "<div class='nic-empty'>No inventory rows match the current filter.</div>") + "</section></section>";
     }
     function settingsView() {
-        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Detected when this script started'><span>Runtime</span><strong>" + RUNTIME.name + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
+        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Detected from TornPDA signals and the active viewport'><span>Runtime</span><strong>" + runtimeInfo().label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
             "<label for='nic-api-key'>Torn API Key</label><div class='nic-key-row'><input id='nic-api-key' type='password' autocomplete='off' value='" +
             escapeHtml(state.apiKey) + "' placeholder='Enter Torn API key'><button data-action='save-key'>Save Key</button></div>" +
             "<p>Inventory is manual-refresh only. Each refresh retrieves the current Torn item catalog market price, inventory categories, and equipped item bonuses/mods.</p>" +
@@ -394,9 +397,26 @@
             top: Math.max(0, Math.round(viewport?.offsetTop || 0))
         };
     }
-    function applyTornPdaViewport() {
+    function runtimeInfo() {
+        const viewport = getViewportMetrics();
+        const scale = Number(window.visualViewport?.scale) || 1;
+        const compact = RUNTIME.isTornPDA || viewport.width <= 700 || viewport.height <= 520 || (scale > 1.1 && viewport.width <= 960);
+        return { compact, mode: compact ? "compact" : "desktop", label: RUNTIME.isTornPDA ? "TornPDA / compact" : compact ? "Compact viewport" : "Desktop" };
+    }
+    function isCompactRuntime() {
+        return runtimeInfo().compact;
+    }
+    function applyRuntimePresentation() {
+        const dashboard = state.dashboard;
+        if (!dashboard) return runtimeInfo();
+        const runtime = runtimeInfo();
+        dashboard.dataset.runtime = runtime.mode;
+        return runtime;
+    }
+    function applyCompactViewport() {
         const dashboard = state.dashboard;
         if (!dashboard) return;
+        applyRuntimePresentation();
         const viewport = getViewportMetrics();
         dashboard.style.setProperty("--nic-vv-width", viewport.width + "px");
         dashboard.style.setProperty("--nic-vv-height", viewport.height + "px");
@@ -411,7 +431,7 @@
     }
     function getSizeLimits() {
         const viewport = getViewportMetrics();
-        if (RUNTIME.isTornPDA) {
+        if (isCompactRuntime()) {
             return { minWidth: 1, minHeight: 1, maxWidth: viewport.width, maxHeight: viewport.height };
         }
         return {
@@ -430,10 +450,11 @@
     function applyPosition(position = state.position) {
         const dashboard = state.dashboard;
         if (!dashboard) return;
-        if (RUNTIME.isTornPDA && !state.isMinimized) {
-            applyTornPdaViewport();
+        if (isCompactRuntime() && !state.isMinimized) {
+            applyCompactViewport();
             return;
         }
+        applyRuntimePresentation();
         const rect = dashboard.getBoundingClientRect();
         const saved = position || { edge: "right", x: window.innerWidth - rect.width, y: 20 };
         const x = clamp(Number(saved.x || 0), 0, window.innerWidth - rect.width);
@@ -446,7 +467,7 @@
         else { dashboard.style.left = Math.max(0, window.innerWidth - rect.width) + "px"; dashboard.style.top = y + "px"; }
     }
     function savePosition() {
-        if (RUNTIME.isTornPDA) return;
+        if (isCompactRuntime()) return;
         const rect = state.dashboard.getBoundingClientRect();
         const distances = { left: rect.left, right: window.innerWidth - rect.right, top: rect.top, bottom: window.innerHeight - rect.bottom };
         const edge = Object.entries(distances).sort((a, b) => a[1] - b[1])[0][0];
@@ -455,7 +476,7 @@
         applyPosition();
     }
     function saveSize() {
-        if (state.isMinimized || RUNTIME.isTornPDA) return;
+        if (state.isMinimized || isCompactRuntime()) return;
         const rect = state.dashboard.getBoundingClientRect();
         state.windowSizes[sizeKey()] = { width: rect.width, height: rect.height };
         saveDashboardState();
@@ -463,8 +484,8 @@
     function applySize() {
         if (state.isMinimized) return;
         const dashboard = state.dashboard;
-        if (RUNTIME.isTornPDA) {
-            applyTornPdaViewport();
+        if (isCompactRuntime()) {
+            applyCompactViewport();
             return;
         }
         const limits = getSizeLimits();
@@ -494,7 +515,7 @@
             handles.forEach((handle) => { handle.style.display = "none"; });
             dashboard.style.cursor = "pointer";
             dashboard.dataset.compact = "false";
-            if (RUNTIME.isTornPDA) {
+            if (isCompactRuntime()) {
                 dashboard.style.left = "auto";
                 dashboard.style.top = "calc(env(safe-area-inset-top) + 8px)";
                 dashboard.style.right = "calc(env(safe-area-inset-right) + 8px)";
@@ -511,7 +532,7 @@
             title.textContent = "▣ Naughty Inventory Companion v" + VERSION;
             title.style.fontSize = "12px";
             minimize.style.display = "grid";
-            handles.forEach((handle) => { handle.style.display = RUNTIME.isTornPDA ? "none" : "block"; });
+            handles.forEach((handle) => { handle.style.display = isCompactRuntime() ? "none" : "block"; });
             dashboard.style.cursor = "";
             applySize();
             applyCompactDetailLayout();
@@ -623,7 +644,7 @@
         const events = usePointerEvents ? { down: "pointerdown", move: "pointermove", up: "pointerup" } : { down: "mousedown", move: "mousemove", up: "mouseup" };
         let dragging = false, didDrag = false, dragStart = null, dragOffsetX = 0, dragOffsetY = 0, pointerId = null;
         dragHandle.addEventListener(events.down, (event) => {
-            if (RUNTIME.isTornPDA || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
+            if (isCompactRuntime() || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
             const rect = dashboard.getBoundingClientRect();
             dragging = true;
             didDrag = false;
@@ -663,7 +684,7 @@
         });
         let resizing = false, resizeStart = null, resizePointerId = null, resizeHandle = null;
         dashboard.querySelectorAll(".nic-resize").forEach((handle) => handle.addEventListener(events.down, (event) => {
-            if (RUNTIME.isTornPDA || state.isMinimized || ("button" in event && event.button !== 0)) return;
+            if (isCompactRuntime() || state.isMinimized || ("button" in event && event.button !== 0)) return;
             event.preventDefault();
             event.stopPropagation();
             resizing = true;
@@ -700,9 +721,12 @@
         const syncViewport = () => {
             cancelAnimationFrame(viewportFrame);
             viewportFrame = requestAnimationFrame(() => {
+                const priorMode = dashboard.dataset.runtime;
+                applyRuntimePresentation();
                 applySize();
                 applyCompactDetailLayout();
-                if (!RUNTIME.isTornPDA) saveSize();
+                if (priorMode !== dashboard.dataset.runtime) render();
+                else if (!isCompactRuntime()) saveSize();
             });
         };
         window.addEventListener("resize", syncViewport);
@@ -714,16 +738,16 @@
     function initializeDashboard() {
         const dashboard = document.createElement("aside");
         dashboard.id = "nic-wrapper";
-        dashboard.dataset.runtime = RUNTIME.isTornPDA ? "tornpda" : "desktop";
+        dashboard.dataset.runtime = runtimeInfo().mode;
         dashboard.innerHTML = `
             <style>
                 #nic-wrapper{position:fixed;z-index:999999;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(150deg,rgba(20,28,42,.985),rgba(13,19,30,.985));color:#edf4ff;border:1px solid #40516d;border-radius:14px;box-shadow:0 16px 38px rgba(0,0,0,.55);font-family:Inter,Segoe UI,Arial,sans-serif;contain:layout style}
                 #nic-wrapper[data-theme='light']{background:linear-gradient(145deg,#d9e2ed,#c8d4e1);color:#172438;border-color:#71849c;box-shadow:0 14px 30px rgba(21,35,54,.24)}
-                #nic-wrapper[data-runtime='tornpda']:not([data-minimized='true']){left:calc(var(--nic-vv-left,0px) + env(safe-area-inset-left) + 5px)!important;top:calc(var(--nic-vv-top,0px) + env(safe-area-inset-top) + 5px)!important;right:auto!important;bottom:auto!important;width:max(1px,calc(var(--nic-vv-width,100vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 10px))!important;height:max(1px,calc(var(--nic-vv-height,100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 10px))!important;border-radius:13px}
+                #nic-wrapper[data-runtime='compact']:not([data-minimized='true']){left:calc(var(--nic-vv-left,0px) + env(safe-area-inset-left) + 5px)!important;top:calc(var(--nic-vv-top,0px) + env(safe-area-inset-top) + 5px)!important;right:auto!important;bottom:auto!important;width:max(1px,calc(var(--nic-vv-width,100vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 10px))!important;height:max(1px,calc(var(--nic-vv-height,100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 10px))!important;border-radius:13px}
                 #nic-wrapper *,#nic-wrapper *:before,#nic-wrapper *:after{box-sizing:border-box;min-width:0;max-width:100%;overflow-wrap:anywhere}
                 #nic-drag{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:8px 11px;background:linear-gradient(100deg,#1b2a43,#28446a);border-bottom:1px solid #4e6687;cursor:move;user-select:none;touch-action:none}
                 #nic-wrapper[data-theme='light'] #nic-drag{background:linear-gradient(100deg,#bbcadd,#d3dee9);border-color:#778ba5}
-                #nic-wrapper[data-runtime='tornpda'] #nic-drag{cursor:default;touch-action:manipulation}
+                #nic-wrapper[data-runtime='compact'] #nic-drag{cursor:default;touch-action:manipulation}
                 #nic-wrapper[data-minimized='true'] #nic-drag{height:36px;min-height:36px;padding:0;border:0;justify-content:center;cursor:pointer}
                 #nic-title{font-size:12px;font-weight:800;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
                 #nic-minimize{display:grid;width:42px;height:36px;min-width:42px;flex:0 0 42px;place-items:center;border:1px solid #7793bb;border-radius:8px;background:#294564;color:#fff;font-size:21px;font-weight:750;line-height:1;cursor:pointer;touch-action:manipulation}
@@ -775,7 +799,7 @@
                 .nic-empty{padding:22px 10px;color:#aebed3;font-size:11px;text-align:center}.nic-settings{display:grid;gap:11px;align-content:start}.nic-card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.nic-card-title h2{margin:0;font-size:15px}.nic-runtime{display:flex;align-items:center;gap:5px;margin-top:3px;color:#9fb0c7;font-size:9px;font-weight:700}.nic-runtime strong{padding:2px 5px;border:1px solid #58769b;border-radius:999px;color:#a9deff;font-size:9px}.nic-settings label{font-size:11px;font-weight:800}.nic-key-row,.nic-setting-actions{display:flex;gap:7px;flex-wrap:wrap}.nic-key-row input{flex:1 1 180px}.nic-settings p{margin:0;color:#aebed3;font-size:10px;line-height:1.5}
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}
-                #nic-wrapper[data-runtime='tornpda'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='tornpda'] button{min-height:38px}#nic-wrapper[data-runtime='tornpda'] #nic-body{padding:8px}#nic-wrapper[data-runtime='tornpda'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='tornpda'] .nic-summary-card{padding:8px}
+                #nic-wrapper[data-runtime='compact'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='compact'] button{min-height:38px}#nic-wrapper[data-runtime='compact'] #nic-body{padding:8px}#nic-wrapper[data-runtime='compact'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='compact'] .nic-summary-card{padding:8px}
                 #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
                 #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
                 #nic-wrapper[data-compact='true'] .nic-category-row{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:5px 12px!important;min-height:0;padding:9px 10px;font-size:10px;text-align:left}
@@ -788,7 +812,7 @@
                 #nic-wrapper[data-compact='true'] .nic-item-row{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:0!important;padding:9px 7px;font-size:10px}#nic-wrapper[data-compact='true'] .nic-item-row>div:first-child{grid-column:auto;margin:0 0 5px;padding:0 0 6px;border-bottom:1px solid #283950}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child){display:flex;grid-column:auto;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;padding:4px 0;text-align:right!important}#nic-wrapper[data-compact='true'] .nic-item-row>div:not(:first-child):before{flex:0 0 auto;color:#8fa4be;font-size:9px;font-weight:800;text-align:left;text-transform:uppercase;letter-spacing:.035em}#nic-wrapper[data-compact='true'] .nic-detail-value{min-width:0;overflow-wrap:anywhere;text-align:right}#nic-wrapper[data-compact='true'] .nic-perks,#nic-wrapper[data-compact='true'] .nic-mods{align-items:flex-start!important;line-height:1.35}#nic-wrapper[data-compact='true'] .nic-perks .nic-detail-value,#nic-wrapper[data-compact='true'] .nic-mods .nic-detail-value{padding-top:1px}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(2):before{content:'Qty'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(3):before{content:'Unit value'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(4):before{content:'Item total'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(5):before{content:'Bonus / perks'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(6):before{content:'Mods'}#nic-wrapper[data-compact='true'] .nic-item-row>div:nth-child(7):before{content:'Loan status'}#nic-wrapper[data-compact='true'][data-theme='light'] .nic-category-row>div:first-child,#nic-wrapper[data-compact='true'][data-theme='light'] .nic-item-row>div:first-child{border-color:#b1c0cf}
                 @media(max-width:600px){.nic-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.nic-summary-card span{font-size:8px}.nic-summary-card strong{font-size:14px}.nic-summary-card small{font-size:8px}.nic-parent-header,.nic-category-row{grid-template-columns:minmax(0,1.35fr) minmax(0,.45fr) minmax(0,.5fr) minmax(0,1fr) minmax(0,.45fr);gap:3px;font-size:9px}.nic-parent-header{padding:6px 5px}.nic-category-row{padding:8px 5px}.nic-category-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nic-caret{width:12px}.nic-toolbar{gap:6px}.nic-toolbar span{display:none}.nic-key-row,.nic-setting-actions{display:grid;grid-template-columns:1fr}.nic-key-row input{min-height:38px}.nic-item-header,.nic-item-row{grid-template-columns:minmax(80px,1.25fr) minmax(32px,.4fr) minmax(54px,.7fr) minmax(58px,.75fr) minmax(74px,1fr) minmax(62px,.9fr) minmax(42px,.5fr);gap:3px;font-size:8px}}
             </style>
-            <style>#nic-wrapper[data-runtime='tornpda'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='tornpda'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
+            <style>#nic-wrapper[data-runtime='compact'] .nic-category-table{min-height:clamp(70px,24dvh,132px)}#nic-wrapper[data-runtime='compact'][data-tab='settings'] #nic-body{overflow-y:auto;scrollbar-width:none}</style>
             <header id='nic-drag'><span id='nic-title'></span><button id='nic-minimize' aria-label='Minimize Naughty Inventory Companion'>−</button></header>
             <main id='nic-body'><div id='nic-content'></div></main>
             <i class='nic-resize' data-corner='top-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-right' title='Resize this tab'></i>`;

@@ -10,7 +10,7 @@ Naughty Inventory Companion is a focused Torn inventory dashboard for Tampermonk
 - Searches both category and item names.
 - Sorts categories and expanded item rows. Desktop headers are clickable; narrow layouts use compact sort controls so all fields remain usable.
 - Remembers expanded categories, filters, sort choices, theme, panel position, and panel size.
-- Uses a compact responsive layout on TornPDA, including safe-area and active-viewport handling.
+- Uses a compact responsive layout on TornPDA and constrained desktop viewports: effective width ≤700px, effective height ≤520px, or scale >1.1 at ≤960px. It follows safe areas and the active visual viewport.
 
 ## Installation
 
