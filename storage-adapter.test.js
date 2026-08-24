@@ -31,7 +31,7 @@ function harness({ nativeValues = {}, legacyValues = {}, quota = false } = {}) {
         localStorage: { getItem: (key) => local.get(key) ?? null, setItem: (key, value) => local.set(key, value), removeItem: (key) => local.delete(key) }
     };
     const context = vm.createContext({
-        console: { info() {}, warn() {}, error() {} }, URL, URLSearchParams, Promise, Date, Math, Object, Array, String, Number, Boolean, JSON,
+        console: { info() {}, warn() {}, error() {} }, URL, URLSearchParams, Promise, Date, Math, Object, Array, String, Number, Boolean, JSON, TextEncoder, Uint8Array,
         window, navigator: { userAgent: "" }, PDA_storage: storage,
         document: { readyState: "loading", visibilityState: "visible", documentElement: { clientWidth: 1200, clientHeight: 800 }, addEventListener() {} },
         GM: {
@@ -97,11 +97,35 @@ async function backupValidation() {
     assert.throws(() => initial.hooks.validateBackup({ ...backup, schema: "other-companion" }), /compatible Naughty Inventory Companion backup/);
 }
 
+async function inventoryExportFormats() {
+    const initial = harness();
+    initial.hooks.state.inventory = {
+        rows: [{ category: "medical", id: 123, name: "First Aid Kit", quantity: 12, price: 4500, total: 54000, equipped: false, bonusText: "", modsText: "", factionOwned: false }],
+        totalCount: 12,
+        totalValue: 54000,
+        syncedAt: Date.UTC(2026, 7, 24, 18, 0, 0),
+        failedCategories: ["book"]
+    };
+    const data = initial.hooks.inventoryExportData();
+    const csv = initial.hooks.createInventoryCsv(data);
+    const spreadsheet = initial.hooks.createInventorySpreadsheet(data);
+
+    assert.match(csv, /Naughty Inventory Companion snapshot/);
+    assert.match(csv, /\$54,000/);
+    assert.match(csv, /First Aid Kit/);
+    assert.equal(spreadsheet[0], 0x50);
+    assert.equal(spreadsheet[1], 0x4B);
+    const xlsxText = Buffer.from(spreadsheet).toString("utf8");
+    assert.match(xlsxText, /xl\/worksheets\/sheet1\.xml/);
+    assert.match(xlsxText, /Naughty Inventory Companion snapshot/);
+}
+
 (async () => {
     await nativePreferredRead();
     await oneTimeMigration();
     await quotaFallbackAndQueue();
     await deletesBothStores();
     await backupValidation();
-    console.log("Inventory storage adapter checks passed: native preference, migration, quota fallback, queue, deletes, and backup validation.");
+    await inventoryExportFormats();
+    console.log("Inventory storage adapter checks passed: native preference, migration, quota fallback, queue, deletes, backup validation, and export formats.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -41,6 +41,12 @@ Inventory refresh is intentionally **manual only**. The script does not poll you
 
 Values are an estimate based on the latest loaded catalog market price; they are not a sale guarantee and do not account for market liquidity, listing fees, or item condition.
 
+## Exports
+
+The Inventory tab exports the complete stored snapshot, not just the currently filtered rows. **Save as CSV** creates a clean, spreadsheet-readable file with a snapshot summary and every item row. **Save as Spreadsheet** creates a formatted `.xlsx` workbook with numeric quantity/currency columns, a filterable item table, and readable widths for item details.
+
+On TornPDA, either action opens the native share sheet from the user’s tap. On desktop, it downloads the file locally. Exports remain local to the device until you choose a destination in the native share sheet.
+
 ## Desktop and TornPDA
 
 On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Responsive tiers use the actual panel width: details become labeled cards at 680px or below, controls and cards wrap at 480px or below, and summaries/categories become single-column at 360px or below. Desktop tables remain intact above those thresholds. The panel body and category list are the only intentional scroll regions; their tracks are hidden while wheel, keyboard, and touch scrolling remain native.
@@ -82,4 +88,5 @@ Reopen the raw userscript URL above in your userscript manager to install the ne
 ```powershell
 node --check "Naughty Inventory Companion.user.js"
 node --test inventory-regression.test.js
+node --test storage-adapter.test.js
 ```

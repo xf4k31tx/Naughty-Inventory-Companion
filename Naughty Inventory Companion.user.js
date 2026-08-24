@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.7
+// @version      1.2.8
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -26,7 +26,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.7";
+    const VERSION = "1.2.8";
     const BASE_URL = "https://api.torn.com/v2/";
     const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
     const NATIVE_REMINDER_ID = 6321;
@@ -282,6 +282,7 @@
         position: null,
         inventory: null,
         refreshInFlight: false,
+        exportInFlight: false,
         status: "Manual refresh only.",
         error: "",
         dashboard: null,
@@ -872,6 +873,250 @@
                 "<div><span class='nic-detail-value'>" + loanStatus(item, group.category) + "</span></div></article>"
             ).join("") + "</div>";
     }
+    function exportLoanStatus(item) {
+        if (!LOANABLE_CATEGORIES.has(item.category)) return "";
+        return item.factionOwned ? "Loaned" : "Owned";
+    }
+    function inventoryExportData() {
+        const inventory = state.inventory || { rows: [], totalCount: 0, totalValue: 0, failedCategories: [] };
+        const rows = [...(Array.isArray(inventory.rows) ? inventory.rows : [])].sort((left, right) => {
+            const category = String(left.category || "").localeCompare(String(right.category || ""));
+            return category || String(left.name || "").localeCompare(String(right.name || "")) || Number(left.id || 0) - Number(right.id || 0);
+        });
+        return {
+            snapshotAt: Number(inventory.syncedAt) || Date.now(),
+            totalCount: Number(inventory.totalCount || 0),
+            totalValue: Number(inventory.totalValue || 0),
+            failedCategories: Array.isArray(inventory.failedCategories) ? inventory.failedCategories : [],
+            headers: ["Category", "Item ID", "Item", "Quantity", "Unit Value", "Total Value", "Equipped", "Bonus / Perks", "Mods", "Loan Status"],
+            rows
+        };
+    }
+    function csvExportLine(values) {
+        return values.map((value) => "\"" + String(value ?? "").replace(/\"/g, "\"\"") + "\"").join(",");
+    }
+    function createInventoryCsv(data = inventoryExportData()) {
+        const summary = [
+            ["Naughty Inventory Companion snapshot"],
+            ["Snapshot UTC", new Date(data.snapshotAt).toISOString()],
+            ["Tracked items", formatInteger(data.totalCount)],
+            ["Live inventory value", formatMoney(data.totalValue)],
+            ["Distinct item rows", formatInteger(data.rows.length)],
+            ["Unavailable categories", data.failedCategories.length ? data.failedCategories.join(", ") : "None"],
+            [],
+            data.headers
+        ];
+        const rows = data.rows.map((item) => [
+            item.category, formatInteger(item.id), item.name, formatInteger(item.quantity), formatMoney(item.price), formatMoney(item.total),
+            item.equipped ? "Yes" : "No", item.bonusText || "", item.modsText || "", exportLoanStatus(item)
+        ]);
+        return "\uFEFF" + [...summary, ...rows].map(csvExportLine).join("\r\n");
+    }
+    function utf8Bytes(value) {
+        if (typeof TextEncoder !== "function") throw new Error("This runtime cannot create spreadsheet exports.");
+        return new TextEncoder().encode(String(value ?? ""));
+    }
+    function zipWriteU16(target, offset, value) {
+        target[offset] = value & 255;
+        target[offset + 1] = (value >>> 8) & 255;
+    }
+    function zipWriteU32(target, offset, value) {
+        const unsigned = Number(value) >>> 0;
+        target[offset] = unsigned & 255;
+        target[offset + 1] = (unsigned >>> 8) & 255;
+        target[offset + 2] = (unsigned >>> 16) & 255;
+        target[offset + 3] = (unsigned >>> 24) & 255;
+    }
+    function zipCrc32(bytes) {
+        let crc = 0xFFFFFFFF;
+        for (let index = 0; index < bytes.length; index += 1) {
+            crc ^= bytes[index];
+            for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+        }
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+    function zipDateTime(date) {
+        const year = Math.max(1980, date.getFullYear());
+        return {
+            time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+            date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()
+        };
+    }
+    function zipStoredFiles(files) {
+        const timestamp = zipDateTime(new Date());
+        const entries = files.map((file) => {
+            const name = utf8Bytes(file.name);
+            const bytes = file.bytes instanceof Uint8Array ? file.bytes : utf8Bytes(file.bytes);
+            return { name, bytes, crc: zipCrc32(bytes), offset: 0 };
+        });
+        const localLength = entries.reduce((total, entry) => total + 30 + entry.name.length + entry.bytes.length, 0);
+        const centralLength = entries.reduce((total, entry) => total + 46 + entry.name.length, 0);
+        const output = new Uint8Array(localLength + centralLength + 22);
+        let cursor = 0;
+        entries.forEach((entry) => {
+            entry.offset = cursor;
+            zipWriteU32(output, cursor, 0x04034B50); cursor += 4;
+            zipWriteU16(output, cursor, 20); cursor += 2;
+            zipWriteU16(output, cursor, 0x0800); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU16(output, cursor, timestamp.time); cursor += 2;
+            zipWriteU16(output, cursor, timestamp.date); cursor += 2;
+            zipWriteU32(output, cursor, entry.crc); cursor += 4;
+            zipWriteU32(output, cursor, entry.bytes.length); cursor += 4;
+            zipWriteU32(output, cursor, entry.bytes.length); cursor += 4;
+            zipWriteU16(output, cursor, entry.name.length); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            output.set(entry.name, cursor); cursor += entry.name.length;
+            output.set(entry.bytes, cursor); cursor += entry.bytes.length;
+        });
+        const centralOffset = cursor;
+        entries.forEach((entry) => {
+            zipWriteU32(output, cursor, 0x02014B50); cursor += 4;
+            zipWriteU16(output, cursor, 20); cursor += 2;
+            zipWriteU16(output, cursor, 20); cursor += 2;
+            zipWriteU16(output, cursor, 0x0800); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU16(output, cursor, timestamp.time); cursor += 2;
+            zipWriteU16(output, cursor, timestamp.date); cursor += 2;
+            zipWriteU32(output, cursor, entry.crc); cursor += 4;
+            zipWriteU32(output, cursor, entry.bytes.length); cursor += 4;
+            zipWriteU32(output, cursor, entry.bytes.length); cursor += 4;
+            zipWriteU16(output, cursor, entry.name.length); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU16(output, cursor, 0); cursor += 2;
+            zipWriteU32(output, cursor, 0); cursor += 4;
+            zipWriteU32(output, cursor, entry.offset); cursor += 4;
+            output.set(entry.name, cursor); cursor += entry.name.length;
+        });
+        const centralSize = cursor - centralOffset;
+        zipWriteU32(output, cursor, 0x06054B50); cursor += 4;
+        zipWriteU16(output, cursor, 0); cursor += 2;
+        zipWriteU16(output, cursor, 0); cursor += 2;
+        zipWriteU16(output, cursor, entries.length); cursor += 2;
+        zipWriteU16(output, cursor, entries.length); cursor += 2;
+        zipWriteU32(output, cursor, centralSize); cursor += 4;
+        zipWriteU32(output, cursor, centralOffset); cursor += 4;
+        zipWriteU16(output, cursor, 0);
+        return output;
+    }
+    function xlsxColumnName(index) {
+        let value = index + 1;
+        let column = "";
+        while (value > 0) {
+            const remainder = (value - 1) % 26;
+            column = String.fromCharCode(65 + remainder) + column;
+            value = Math.floor((value - 1) / 26);
+        }
+        return column;
+    }
+    function xlsxCell(cell, reference) {
+        const style = cell.style ? " s='" + cell.style + "'" : "";
+        if (cell.type === "number") {
+            const number = Math.round(Number(cell.value));
+            return "<c r='" + reference + "'" + style + "><v>" + (Number.isFinite(number) ? number : 0) + "</v></c>";
+        }
+        return "<c r='" + reference + "'" + style + " t='inlineStr'><is><t xml:space='preserve'>" + escapeHtml(cell.value) + "</t></is></c>";
+    }
+    function xlsxRow(cells, rowNumber) {
+        return "<row r='" + rowNumber + "'>" + cells.map((cell, index) => xlsxCell(cell, xlsxColumnName(index) + rowNumber)).join("") + "</row>";
+    }
+    function createInventorySpreadsheet(data = inventoryExportData()) {
+        const summary = [
+            [{ value: "Naughty Inventory Companion snapshot", style: 1 }],
+            [{ value: "Snapshot UTC", style: 1 }, { value: new Date(data.snapshotAt).toISOString() }],
+            [{ value: "Tracked items", style: 1 }, { value: data.totalCount, type: "number", style: 3 }],
+            [{ value: "Live inventory value", style: 1 }, { value: data.totalValue, type: "number", style: 2 }],
+            [{ value: "Distinct item rows", style: 1 }, { value: data.rows.length, type: "number", style: 3 }],
+            [{ value: "Unavailable categories", style: 1 }, { value: data.failedCategories.length ? data.failedCategories.join(", ") : "None" }]
+        ];
+        const worksheetRows = summary.map((cells, index) => xlsxRow(cells, index + 1));
+        worksheetRows.push(xlsxRow(data.headers.map((value) => ({ value, style: 4 })), 8));
+        data.rows.forEach((item, index) => worksheetRows.push(xlsxRow([
+            { value: item.category }, { value: item.id, type: "number", style: 3 }, { value: item.name },
+            { value: item.quantity, type: "number", style: 3 }, { value: item.price, type: "number", style: 2 },
+            { value: item.total, type: "number", style: 2 }, { value: item.equipped ? "Yes" : "No" },
+            { value: item.bonusText || "" }, { value: item.modsText || "" }, { value: exportLoanStatus(item) }
+        ], index + 9)));
+        const lastRow = Math.max(8, data.rows.length + 8);
+        const worksheet = "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>" +
+            "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><sheetViews><sheetView workbookViewId='0'/></sheetViews><sheetFormatPr defaultRowHeight='15'/>" +
+            "<cols><col min='1' max='1' width='18' customWidth='1'/><col min='2' max='2' width='12' customWidth='1'/><col min='3' max='3' width='32' customWidth='1'/><col min='4' max='4' width='12' customWidth='1'/><col min='5' max='6' width='16' customWidth='1'/><col min='7' max='7' width='12' customWidth='1'/><col min='8' max='9' width='38' customWidth='1'/><col min='10' max='10' width='16' customWidth='1'/></cols>" +
+            "<sheetData>" + worksheetRows.join("") + "</sheetData><autoFilter ref='A8:J" + lastRow + "'/></worksheet>";
+        return zipStoredFiles([
+            { name: "[Content_Types].xml", bytes: "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Default Extension='rels' ContentType='application/vnd.openxmlformats-package.relationships+xml'/><Default Extension='xml' ContentType='application/xml'/><Override PartName='/xl/workbook.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'/><Override PartName='/xl/worksheets/sheet1.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'/><Override PartName='/xl/styles.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'/></Types>" },
+            { name: "_rels/.rels", bytes: "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='rId1' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' Target='xl/workbook.xml'/></Relationships>" },
+            { name: "xl/workbook.xml", bytes: "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><workbook xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main' xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><sheets><sheet name='Inventory' sheetId='1' r:id='rId1'/></sheets></workbook>" },
+            { name: "xl/_rels/workbook.xml.rels", bytes: "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='rId1' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet' Target='worksheets/sheet1.xml'/><Relationship Id='rId2' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles' Target='styles.xml'/></Relationships>" },
+            { name: "xl/styles.xml", bytes: "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><styleSheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><numFmts count='1'><numFmt numFmtId='164' formatCode='$#,##0'/></numFmts><fonts count='2'><font><sz val='11'/><name val='Calibri'/></font><font><b/><sz val='11'/><name val='Calibri'/></font></fonts><fills count='3'><fill><patternFill patternType='none'/></fill><fill><patternFill patternType='gray125'/></fill><fill><patternFill patternType='solid'><fgColor rgb='FFDAE8F5'/><bgColor indexed='64'/></patternFill></fill></fills><borders count='1'><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count='1'><xf numFmtId='0' fontId='0' fillId='0' borderId='0'/></cellStyleXfs><cellXfs count='5'><xf numFmtId='0' fontId='0' fillId='0' borderId='0' xfId='0'/><xf numFmtId='0' fontId='1' fillId='0' borderId='0' xfId='0' applyFont='1'/><xf numFmtId='164' fontId='0' fillId='0' borderId='0' xfId='0' applyNumberFormat='1'/><xf numFmtId='3' fontId='0' fillId='0' borderId='0' xfId='0' applyNumberFormat='1'/><xf numFmtId='0' fontId='1' fillId='2' borderId='0' xfId='0' applyFont='1' applyFill='1'/></cellXfs></styleSheet>" },
+            { name: "xl/worksheets/sheet1.xml", bytes: worksheet }
+        ]);
+    }
+    function inventoryExportFileName(extension) {
+        const date = new Date(Number(state.inventory?.syncedAt) || Date.now()).toISOString().slice(0, 10);
+        return "naughty-inventory-snapshot-" + date + "." + extension;
+    }
+    function bytesToBase64(bytes) {
+        if (typeof btoa !== "function") return "";
+        let binary = "";
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+            const limit = Math.min(bytes.length, offset + 0x8000);
+            for (let index = offset; index < limit; index += 1) binary += String.fromCharCode(bytes[index]);
+        }
+        return btoa(binary);
+    }
+    function downloadInventoryExport(bytes, fileName, mimeType) {
+        const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    async function shareInventoryExport(bytes, fileName) {
+        if (!RUNTIME.isTornPDA || !RUNTIME.flutterReady) return false;
+        const base64Data = bytesToBase64(bytes);
+        if (!base64Data) return false;
+        try {
+            const response = await nativeBridgeCall("shareFile", { base64Data, fileName });
+            return response !== false && response?.success !== false && response?.status !== "error";
+        } catch (error) {
+            logDebug("Native inventory export share sheet was unavailable.", { category: safeErrorCategory(error) });
+            return false;
+        }
+    }
+    async function exportInventory(format) {
+        if (state.exportInFlight || !Array.isArray(state.inventory?.rows) || !state.inventory.rows.length) return;
+        const isSpreadsheet = format === "spreadsheet";
+        const label = isSpreadsheet ? "Spreadsheet" : "CSV";
+        state.exportInFlight = true;
+        state.error = "";
+        state.status = "Preparing " + label + " export…";
+        render();
+        try {
+            const data = inventoryExportData();
+            const fileName = inventoryExportFileName(isSpreadsheet ? "xlsx" : "csv");
+            const mimeType = isSpreadsheet ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv;charset=utf-8";
+            const bytes = isSpreadsheet ? createInventorySpreadsheet(data) : utf8Bytes(createInventoryCsv(data));
+            const shared = await shareInventoryExport(bytes, fileName);
+            if (!shared) downloadInventoryExport(bytes, fileName, mimeType);
+            state.status = shared ? label + " opened in the TornPDA share sheet." : label + " downloaded.";
+            nativeToast(state.status, "green");
+            logInfo("Inventory export completed.", { format: isSpreadsheet ? "xlsx" : "csv", transport: shared ? "TornPDA shareFile" : "desktop download", items: data.rows.length });
+        } catch (error) {
+            state.status = "Inventory export failed.";
+            state.error = "Unable to create the " + label.toLowerCase() + " export.";
+            nativeToast(state.error, "red");
+            logError("Inventory export failed.", { format: isSpreadsheet ? "xlsx" : "csv", category: safeErrorCategory(error) });
+        } finally {
+            state.exportInFlight = false;
+            render();
+        }
+    }
     function inventoryView() {
         const inventory = state.inventory;
         if (!inventory) {
@@ -892,6 +1137,7 @@
             failures +
             "<div class='nic-toolbar'><input id='nic-filter' value='" + escapeHtml(state.filter) + "' placeholder='Filter categories or item names'><span>" +
             (inventory.syncedAt ? "Price snapshot " + formatRelative(inventory.syncedAt) : "No snapshot") + "</span></div>" +
+            "<div class='nic-export-actions'><span>Exports the full local inventory snapshot</span><button data-action='export-csv'" + (state.exportInFlight ? " disabled" : "") + ">Save as CSV</button><button data-action='export-spreadsheet'" + (state.exportInFlight ? " disabled" : "") + ">Save as Spreadsheet</button></div>" +
             "<section class='nic-category-table'>" + compactParentSortControls() + "<div class='nic-parent-header'>" +
             parentHeader("Category", "category") + parentHeader("Items", "distinctItems") + parentHeader("Qty", "quantity") +
             parentHeader("Category Value", "value") + parentHeader("Loaned", "loaned") + "</div>" +
@@ -1222,6 +1468,8 @@
             render();
         });
         content.querySelector("[data-action='refresh']")?.addEventListener("click", () => void fetchInventory());
+        content.querySelector("[data-action='export-csv']")?.addEventListener("click", () => void exportInventory("csv"));
+        content.querySelector("[data-action='export-spreadsheet']")?.addEventListener("click", () => void exportInventory("spreadsheet"));
         content.querySelector("[data-action='save-key']")?.addEventListener("click", () => {
             state.savedApiKey = content.querySelector("#nic-api-key").value.trim();
             if (!adoptInjectedPdaApiKey()) {
@@ -1476,6 +1724,8 @@
                 .nic-toolbar input,.nic-key-row input{width:100%;min-height:34px;min-width:0;border:1px solid #526986;border-radius:8px;background:#111b2a;color:#f4f8ff;padding:7px 9px;font-size:11px;outline:none}
                 .nic-toolbar input:focus,.nic-key-row input:focus{border-color:#8eb5e5;box-shadow:0 0 0 2px rgba(110,159,214,.22)}
                 #nic-wrapper[data-theme='light'] .nic-toolbar input,#nic-wrapper[data-theme='light'] .nic-key-row input{background:#e6edf4;color:#17263b;border-color:#8397ae}
+                .nic-export-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.nic-export-actions>span{flex:1 1 150px;color:#9baabd;font-size:10px}.nic-export-actions button{flex:0 1 auto}
+                #nic-wrapper[data-theme='light'] .nic-export-actions>span{color:#475d76}
                 .nic-category-table{width:100%;flex:1 1 auto;min-height:132px;overflow-y:auto;overflow-x:hidden;border:1px solid #40516d;border-radius:10px;background:rgba(8,13,22,.45);overscroll-behavior:contain}
                 #nic-wrapper[data-theme='light'] .nic-category-table{background:#d5e0eb;border-color:#8193a8}
                 .nic-parent-header,.nic-category-row{display:grid;grid-template-columns:minmax(130px,1.7fr) minmax(52px,.65fr) minmax(54px,.7fr) minmax(102px,1.1fr) minmax(56px,.55fr);gap:6px;align-items:center;width:100%}
@@ -1501,8 +1751,8 @@
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p,#nic-wrapper[data-theme='light'] .nic-runtime-details dt{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}#nic-wrapper[data-theme='light'] .nic-runtime-details>div,#nic-wrapper[data-theme='light'] .nic-backup{background:#d8e4ef;border-color:#96aabe}#nic-wrapper[data-theme='light'] .nic-runtime-details dd,#nic-wrapper[data-theme='light'] .nic-storage-toggle{color:#203650}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize::after{content:'';position:absolute;width:9px;height:9px;pointer-events:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='top-left']::after{left:4px;top:4px;border-left:2px solid #7793bb;border-top:2px solid #7793bb}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-left']::after{left:4px;bottom:4px;border-left:2px solid #7793bb;border-bottom:2px solid #7793bb}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-right']::after{right:4px;bottom:4px;border-right:2px solid #7793bb;border-bottom:2px solid #7793bb}
                 #nic-wrapper[data-runtime='compact'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='compact'] button{min-height:38px}#nic-wrapper[data-runtime='compact'] #nic-body{padding:8px}#nic-wrapper[data-runtime='compact'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='compact'] .nic-summary-card{padding:8px}
-                #nic-wrapper[data-narrow='true'] .nic-card-title{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-card-title>div{flex:1 1 150px}#nic-wrapper[data-narrow='true'] .nic-card-title>button{margin-left:auto}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline span{grid-column:1/-1;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}#nic-wrapper[data-narrow='true'] .nic-toolbar{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-toolbar input{width:auto;flex:1 1 170px}#nic-wrapper[data-narrow='true'] .nic-toolbar span{flex:1 1 100%}#nic-wrapper[data-narrow='true'] .nic-key-row,#nic-wrapper[data-narrow='true'] .nic-setting-actions,#nic-wrapper[data-narrow='true'] .nic-backup-actions{display:grid;grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-key-row input{min-height:38px}#nic-wrapper[data-narrow='true'] .nic-runtime-details{grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-compact-sort,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-compact-sort>span,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort>span{flex:1 0 100%}#nic-wrapper[data-narrow='true'] .nic-compact-sort select,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort select{flex:1 1 120px}
-                #nic-wrapper[data-narrow='true'] .nic-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#nic-wrapper[data-tiny='true'] .nic-summary-grid{grid-template-columns:1fr}#nic-wrapper[data-tiny='true'][data-compact='true'] .nic-category-row{grid-template-columns:1fr!important}#nic-wrapper[data-tiny='true'] .nic-runtime{flex-wrap:wrap}
+                #nic-wrapper[data-narrow='true'] .nic-card-title{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-card-title>div{flex:1 1 150px}#nic-wrapper[data-narrow='true'] .nic-card-title>button{margin-left:auto}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline span{grid-column:1/-1;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}#nic-wrapper[data-narrow='true'] .nic-toolbar{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-toolbar input{width:auto;flex:1 1 170px}#nic-wrapper[data-narrow='true'] .nic-toolbar span{flex:1 1 100%}#nic-wrapper[data-narrow='true'] .nic-export-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#nic-wrapper[data-narrow='true'] .nic-export-actions>span{grid-column:1/-1}#nic-wrapper[data-narrow='true'] .nic-key-row,#nic-wrapper[data-narrow='true'] .nic-setting-actions,#nic-wrapper[data-narrow='true'] .nic-backup-actions{display:grid;grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-key-row input{min-height:38px}#nic-wrapper[data-narrow='true'] .nic-runtime-details{grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-compact-sort,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-compact-sort>span,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort>span{flex:1 0 100%}#nic-wrapper[data-narrow='true'] .nic-compact-sort select,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort select{flex:1 1 120px}
+                #nic-wrapper[data-narrow='true'] .nic-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#nic-wrapper[data-tiny='true'] .nic-summary-grid{grid-template-columns:1fr}#nic-wrapper[data-tiny='true'] .nic-export-actions{grid-template-columns:1fr}#nic-wrapper[data-tiny='true'][data-compact='true'] .nic-category-row{grid-template-columns:1fr!important}#nic-wrapper[data-tiny='true'] .nic-runtime{flex-wrap:wrap}
                 #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
                 #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
                 #nic-wrapper[data-compact='true'] .nic-category-row{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:5px 12px!important;min-height:0;padding:9px 10px;font-size:10px;text-align:left}
@@ -1577,7 +1827,8 @@
     if (globalThis.__NIC_STORAGE_TEST__) {
         globalThis.__NIC_STORAGE_TEST__.hooks = {
             STORAGE, PERSISTENCE, loadStoredValues, persistValues, flushPersistValues,
-            deletePersistedValues, resolveLegacyStoragePreference, createBackup, validateBackup
+            deletePersistedValues, resolveLegacyStoragePreference, createBackup, validateBackup,
+            state, inventoryExportData, createInventoryCsv, createInventorySpreadsheet
         };
     } else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void bootstrap());
     else void bootstrap();

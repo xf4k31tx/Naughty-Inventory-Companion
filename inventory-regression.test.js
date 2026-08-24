@@ -4,7 +4,7 @@ const assert = require("assert");
 const source = fs.readFileSync("Naughty Inventory Companion.user.js", "utf8");
 const readme = fs.readFileSync("README.md", "utf8");
 
-assert.match(source, /@version\s+1\.2\.7/);
+assert.match(source, /@version\s+1\.2\.8/);
 assert.match(source, /@grant\s+unsafeWindow/);
 assert.match(source, /@grant\s+GM_deleteValue/);
 assert.match(source, /@grant\s+GM\.deleteValue/);
@@ -77,6 +77,14 @@ assert.match(source, /async function loadBackupFile\(file\)/);
 assert.match(source, /data-action='download-backup'/);
 assert.match(source, /data-action='choose-backup'/);
 assert.match(readme, /Backup & restore/i);
+assert.match(source, /data-action='export-csv'/);
+assert.match(source, /data-action='export-spreadsheet'/);
+assert.match(source, /function createInventoryCsv\(/);
+assert.match(source, /function createInventorySpreadsheet\(/);
+assert.match(source, /nativeBridgeCall\("shareFile", \{ base64Data, fileName \}\)/);
+assert.match(source, /naughty-inventory-snapshot-/);
+assert.match(readme, /Save as CSV/i);
+assert.match(readme, /Save as Spreadsheet/i);
 assert.match(source, /com\\\.manuito\\\.tornpda/);
 assert.doesNotMatch(source, /maxTouchPoints|ontouchstart/);
 assert.match(source, /window\.visualViewport/);
@@ -120,4 +128,4 @@ assert.match(source, /if \(index < INVENTORY_CATEGORIES\.length - 1\) await new 
 assert.doesNotMatch(source, /setInterval\(/);
 assert.doesNotMatch(source, /scheduleAutoRefresh/);
 
-console.log("Inventory regression checks passed: data, manual-only refresh, and TornPDA layout guards.");
+console.log("Inventory regression checks passed: data, exports, manual-only refresh, and TornPDA layout guards.");
