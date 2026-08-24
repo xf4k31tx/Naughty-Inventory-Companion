@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.1
+// @version      1.2.2
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -24,8 +24,30 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.1";
+    const VERSION = "1.2.2";
     const BASE_URL = "https://api.torn.com/v2/";
+    const LOG_PREFIX = "[Naughty Inventory Companion]";
+    const consoleEvent = (level, message, details = {}) => {
+        try {
+            if (typeof console === "undefined") return;
+            const write = typeof console[level] === "function" ? console[level] : console.info;
+            write.call(console, LOG_PREFIX + " " + message, details);
+        } catch {}
+    };
+    const logInfo = (message, details) => consoleEvent("info", message, details);
+    const logDebug = (message, details) => consoleEvent("info", "debug: " + message, details);
+    const logWarn = (message, details) => consoleEvent("warn", message, details);
+    const logError = (message, details) => consoleEvent("error", message, details);
+    const elapsedMilliseconds = (startedAt) => Math.max(0, Math.round((window.performance?.now?.() ?? Date.now()) - startedAt));
+    const safeErrorCategory = (error) => error?.code === "QuotaExceeded" ? "QuotaExceeded" : error?.name === "AbortError" ? "AbortError" : "unavailable";
+    function requestSummary(url) {
+        try {
+            const request = new URL(url, BASE_URL);
+            return { method: "GET", host: request.host, path: request.pathname };
+        } catch {
+            return { method: "GET", host: "unknown", path: "unknown" };
+        }
+    }
     const RUNTIME = (() => {
         const userAgent = navigator.userAgent || "";
         const hasTornPdaUserAgent = /\bTornPDA\b|com\.manuito\.tornpda/i.test(userAgent);
@@ -47,17 +69,22 @@
                 const bridge = getFlutterBridge();
                 if (!bridge) {
                     if (checkVersion === nativeCheckVersion) nativeCheckComplete = true;
+                    logDebug("Native TornPDA check skipped; Flutter bridge is unavailable.", { userAgentHint: hasTornPdaUserAgent });
                     return false;
                 }
                 flutterReady = true;
                 let confirmed = false;
                 try {
+                    logDebug("Confirming native TornPDA runtime.", { force, flutterReady });
                     const response = await bridge.callHandler("isTornPDA");
                     confirmed = response?.isTornPDA === true;
-                } catch {} finally {
+                } catch (error) {
+                    logWarn("Native TornPDA confirmation failed; desktop-compatible behavior remains active.", { category: safeErrorCategory(error) });
+                } finally {
                     if (checkVersion !== nativeCheckVersion) return confirmed;
                     isTornPDA = confirmed;
                     nativeCheckComplete = true;
+                    logInfo("Native runtime check complete.", { tornPDA: confirmed, flutterReady });
                     notify();
                 }
                 return confirmed;
@@ -76,24 +103,30 @@
                 };
                 const checkWhenReady = () => {
                     flutterReady = true;
+                    logDebug("Flutter bridge is ready; checking native TornPDA state.", { platformEventReceived });
                     void confirmNativeRuntime(platformEventReceived).then(settle, () => settle(false));
                 };
                 window.addEventListener("flutterInAppWebViewPlatformReady", () => {
                     platformEventReceived = true;
                     checkWhenReady();
                 }, { once: true });
-                if (getFlutterBridge()) {
+                const bridgeAvailable = Boolean(getFlutterBridge());
+                const storageAvailable = Boolean(getPdaStorage());
+                logInfo("Startup runtime detection.", { version: VERSION, userAgentHint: hasTornPdaUserAgent, bridgeAvailable, storageAvailable });
+                if (bridgeAvailable) {
                     checkWhenReady();
                     return;
                 }
-                if (!hasTornPdaUserAgent && !getPdaStorage()) {
+                if (!hasTornPdaUserAgent && !storageAvailable) {
                     nativeCheckComplete = true;
+                    logInfo("Desktop runtime selected; no TornPDA bridge signals found.", { tornPDA: false });
                     settle(false);
                     return;
                 }
                 window.setTimeout(() => {
                     if (!nativeCheckComplete) {
                         nativeCheckComplete = true;
+                        logWarn("Native runtime readiness timed out; continuing with desktop-compatible behavior.", { timeoutMs: 1500 });
                         notify();
                     }
                     settle(false);
@@ -284,7 +317,12 @@
             Object.assign(PERSISTENCE.pdaCache, values);
             return true;
         } catch (error) {
-            if (error?.code === "QuotaExceeded") PERSISTENCE.pdaQuotaExceeded = true;
+            if (error?.code === "QuotaExceeded") {
+                PERSISTENCE.pdaQuotaExceeded = true;
+                logWarn("PDA_storage quota reached; userscript storage will keep future changes safe.", { keys: entries.length, category: "QuotaExceeded" });
+            } else {
+                logWarn("PDA_storage write failed; userscript storage fallback will be used.", { keys: entries.length, category: safeErrorCategory(error) });
+            }
             return false;
         }
     }
@@ -296,6 +334,7 @@
         const storage = getPdaStorage();
         if (storage && (typeof storage.loadAll === "function" || typeof storage.getMany === "function")) {
             try {
+                logDebug("Loading PDA_storage cache at startup.", { method: typeof storage.loadAll === "function" ? "loadAll" : "getMany" });
                 PERSISTENCE.pdaStorage = storage;
                 PERSISTENCE.pdaCache = await readPdaCache(storage);
                 PERSISTENCE.pdaEnabled = true;
@@ -305,15 +344,19 @@
                     .filter((key) => fallback[key] !== undefined)
                     .map((key) => [key, fallback[key]]));
                 if (Object.keys(migration).length && !await writePdaValues(migration)) await legacySetValues(migration);
+                logInfo("PDA_storage cache is active.", { cachedKeys: Object.keys(PERSISTENCE.pdaCache).length, migratedKeys: Object.keys(migration).length });
                 return Object.fromEntries(STORAGE_KEYS.map((key) => [
                     key,
                     Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key) ? PERSISTENCE.pdaCache[key] : fallback[key]
                 ]));
-            } catch {}
+            } catch (error) {
+                logWarn("PDA_storage startup load failed; using userscript storage fallback.", { category: safeErrorCategory(error) });
+            }
             PERSISTENCE.pdaStorage = null;
             PERSISTENCE.pdaCache = Object.create(null);
             PERSISTENCE.pdaEnabled = false;
         }
+        logInfo("Using userscript storage fallback.", { nativeStorageAvailable: Boolean(storage) });
         return legacyValues();
     }
     async function promotePdaStorage() {
@@ -321,6 +364,7 @@
         const storage = getPdaStorage();
         if (!storage || (typeof storage.loadAll !== "function" && typeof storage.getMany !== "function")) return;
         try {
+            logDebug("Promoting compatibility storage into PDA_storage.");
             PERSISTENCE.pdaStorage = storage;
             PERSISTENCE.pdaCache = await readPdaCache(storage);
             PERSISTENCE.pdaEnabled = true;
@@ -328,30 +372,56 @@
             const migration = Object.fromEntries(Object.entries(values)
                 .filter(([key]) => !Object.prototype.hasOwnProperty.call(PERSISTENCE.pdaCache, key)));
             if (Object.keys(migration).length && !await writePdaValues(migration)) await legacySetValues(migration);
-        } catch {
+            logInfo("PDA_storage promotion completed.", { cachedKeys: Object.keys(PERSISTENCE.pdaCache).length, migratedKeys: Object.keys(migration).length });
+        } catch (error) {
+            logWarn("PDA_storage promotion failed; userscript storage fallback remains active.", { category: safeErrorCategory(error) });
             PERSISTENCE.pdaStorage = null;
             PERSISTENCE.pdaCache = Object.create(null);
             PERSISTENCE.pdaEnabled = false;
         }
     }
     function requestJson(url) {
+        const request = requestSummary(url);
+        const startedAt = window.performance?.now?.() ?? Date.now();
         return new Promise((resolve, reject) => {
+            let transport = "unselected";
+            let completed = false;
+            const requestDetails = (details = {}) => ({ ...request, transport, durationMs: elapsedMilliseconds(startedAt), ...details });
+            const start = (nextTransport) => {
+                transport = nextTransport;
+                logInfo("API request.", { ...request, transport });
+            };
+            const fail = (reason, details = {}, userMessage = reason) => {
+                if (completed) return;
+                completed = true;
+                logError("API request failed.", requestDetails({ reason, ...details }));
+                reject(new Error(userMessage));
+            };
+            const succeed = (status) => {
+                if (completed) return;
+                completed = true;
+                logInfo("API request succeeded.", requestDetails({ status }));
+            };
             const onload = (response) => {
                 const status = Number(response?.status ?? 200);
                 if (status < 200 || status >= 300) {
-                    reject(new Error("HTTP " + status));
+                    fail("HTTP " + status, { status });
                     return;
                 }
                 try {
                     const responseText = typeof response === "string" ? response : (response?.responseText ?? JSON.stringify(response?.body ?? response));
                     const data = JSON.parse(responseText);
-                    if (data?.error) reject(new Error(data.error.error || "Torn API error"));
-                    else resolve(data);
+                    if (data?.error) {
+                        fail("Torn API error", { status }, data.error.error || "Torn API error");
+                        return;
+                    }
+                    succeed(status);
+                    resolve(data);
                 } catch {
-                    reject(new Error("Unable to parse Torn API response"));
+                    fail("Unable to parse Torn API response", { status });
                 }
             };
-            const onerror = () => reject(new Error("Network request failed"));
+            const onerror = () => fail("Network request failed");
             const details = {
                 method: "GET",
                 url,
@@ -359,27 +429,37 @@
                 onload,
                 onerror
             };
-            const requestWithFetch = () => {
-                void fetch(url, { headers: details.headers })
-                    .then(async (response) => ({ status: response.status, responseText: await response.text() }))
-                    .then(onload, onerror);
+            const requestWithFetch = (fallbackFrom = "") => {
+                if (fallbackFrom) logWarn("API transport fallback.", requestDetails({ from: fallbackFrom, to: "fetch" }));
+                start("fetch");
+                try {
+                    void fetch(url, { headers: details.headers })
+                        .then(async (response) => ({ status: response.status, responseText: await response.text() }))
+                        .then(onload, onerror);
+                } catch {
+                    onerror();
+                }
             };
             try {
                 if (typeof GM_xmlhttpRequest === "function") {
+                    start("GM_xmlhttpRequest");
                     GM_xmlhttpRequest(details);
                     return;
                 }
                 if (typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function") {
+                    start("GM.xmlHttpRequest");
                     GM.xmlHttpRequest(details);
                     return;
                 }
                 if (RUNTIME.canUseNativeHttp()) {
-                    void RUNTIME.nativeHttpGet(url, details.headers).then(onload, requestWithFetch);
+                    start("TornPDA PDA_httpGet");
+                    void RUNTIME.nativeHttpGet(url, details.headers).then(onload, (error) => requestWithFetch("TornPDA PDA_httpGet:" + safeErrorCategory(error)));
                     return;
                 }
                 requestWithFetch();
-            } catch {
-                onerror();
+            } catch (error) {
+                if (transport === "TornPDA PDA_httpGet") requestWithFetch("TornPDA PDA_httpGet:" + safeErrorCategory(error));
+                else fail("Request initialization failed", { category: safeErrorCategory(error) });
             }
         });
     }
@@ -436,9 +516,11 @@
     }
     async function fetchInventory() {
         if (!state.apiKey || state.refreshInFlight || state.isMinimized) return;
+        const refreshStartedAt = window.performance?.now?.() ?? Date.now();
         state.refreshInFlight = true;
         state.error = "";
         state.status = "Fetching Torn item-market prices…";
+        logInfo("Manual inventory refresh started.", { categories: INVENTORY_CATEGORIES.length });
         render();
         const rows = [];
         const failures = [];
@@ -470,8 +552,9 @@
                             modsText: equipped ? normalizeModsText(equipmentMaps.mods.get(uid)) : ""
                         });
                     });
-                } catch (error) {
+                } catch {
                     failures.push(category);
+                    logWarn("Inventory category could not be loaded.", { category });
                 }
                 if (index < INVENTORY_CATEGORIES.length - 1) await new Promise((resolve) => setTimeout(resolve, 650));
             }
@@ -486,9 +569,15 @@
             };
             void persistValues({ [STORAGE.inventory]: state.inventory });
             state.status = "Live Torn market values loaded.";
+            logInfo("Manual inventory refresh completed.", {
+                items: rows.length,
+                failedCategories: failures.length,
+                durationMs: elapsedMilliseconds(refreshStartedAt)
+            });
         } catch (error) {
             state.error = error.message || "Unable to refresh inventory";
             state.status = "Refresh failed.";
+            logError("Manual inventory refresh failed.", { category: safeErrorCategory(error), durationMs: elapsedMilliseconds(refreshStartedAt) });
         } finally {
             state.refreshInFlight = false;
             render();
@@ -1079,6 +1168,16 @@
         state.expandedCategories = new Set(Array.isArray(dashboard?.expandedCategories) ? dashboard.expandedCategories : []);
         state.filter = String(dashboard?.filter || "");
         PERSISTENCE.hydrated = true;
+        const startupRuntime = runtimeInfo();
+        const startupViewport = getViewportMetrics();
+        logInfo("Startup complete.", {
+            version: VERSION,
+            runtime: startupRuntime.platform,
+            view: startupRuntime.mode,
+            tornPDAConfirmed: RUNTIME.isTornPDA,
+            viewport: startupViewport.width + "x" + startupViewport.height,
+            scale: Number(window.visualViewport?.scale) || 1
+        });
         initializeDashboard();
         RUNTIME.onChange(() => {
             if (!state.dashboard) return;
@@ -1087,6 +1186,8 @@
             applyRuntimePresentation();
             applySize();
             applyCompactDetailLayout();
+            const runtime = runtimeInfo();
+            logInfo("Runtime presentation updated.", { runtime: runtime.platform, view: runtime.mode, tornPDAConfirmed: RUNTIME.isTornPDA });
             if (previousMode !== state.dashboard.dataset.runtime || state.activeTab === "settings") render();
         });
     }

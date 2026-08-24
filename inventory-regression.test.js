@@ -2,8 +2,23 @@ const fs = require("fs");
 const assert = require("assert");
 
 const source = fs.readFileSync("Naughty Inventory Companion.user.js", "utf8");
+const readme = fs.readFileSync("README.md", "utf8");
 
+assert.match(source, /@version\s+1\.2\.2/);
 assert.match(source, /@grant\s+unsafeWindow/);
+assert.match(source, /const LOG_PREFIX = "\[Naughty Inventory Companion\]"/);
+assert.match(source, /function requestSummary\(url\)/);
+assert.match(source, /host: request\.host, path: request\.pathname/);
+assert.doesNotMatch(source, /request\.(?:href|search|searchParams)/);
+assert.match(source, /"Startup runtime detection\."/);
+assert.match(source, /"Native runtime check complete\."/);
+assert.match(source, /"PDA_storage quota reached; userscript storage will keep future changes safe\."/);
+assert.match(source, /"API request\."/);
+assert.match(source, /"API request succeeded\."/);
+assert.match(source, /"API request failed\."/);
+assert.match(source, /durationMs: elapsedMilliseconds\(startedAt\)/);
+assert.match(readme, /## Diagnostics/);
+assert.match(readme, /never include query strings, API keys, headers, or response bodies/i);
 assert.match(source, /const INVENTORY_CATEGORIES = \[/);
 assert.match(source, /requestJson\(apiUrl\("torn\/items", \{ cat: "All" \}\)\)/);
 assert.match(source, /value\.market_price/);

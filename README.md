@@ -51,6 +51,10 @@ The companion gives TornPDA's native, per-script `PDA_storage` priority over Tam
 
 Native TornPDA detection is bridge-confirmed: the script waits for `flutterInAppWebViewPlatformReady` and checks `isTornPDA`. User-agent hints help it decide whether to wait for that bridge but do not independently identify the runtime. Viewport compactness is a separate decision: confirmed TornPDA, or a constrained desktop viewport, receives the full-viewport safe-area-aware compact layout; normal desktop retains draggable, resizable behavior. Requests prefer the declared GM network APIs and use native `PDA_httpGet` only when the confirmed native bridge is available.
 
+## Diagnostics
+
+The browser console records concise, on-by-default diagnostics for startup/runtime confirmation, storage and native-bridge fallbacks, and each API request. Request logs include only method, host, path, status, and duration; they never include query strings, API keys, headers, or response bodies.
+
 ## Privacy and API keys
 
 Your Torn API key, interface preferences, and cached inventory snapshot are stored in your local per-script storage. The script requests Torn data directly from `api.torn.com`. It does not upload inventory data to a separate service.
