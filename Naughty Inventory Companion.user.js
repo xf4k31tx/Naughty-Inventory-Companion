@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/xf4k31tx/Naughty-Inventory-Companion
-// @version      1.2.3
+// @version      1.2.4
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       sharpsplinter [315311]
 // @match        https://www.torn.com/item.php*
@@ -24,7 +24,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.3";
+    const VERSION = "1.2.4";
     const BASE_URL = "https://api.torn.com/v2/";
     const LOG_PREFIX = "[Naughty Inventory Companion]";
     const consoleEvent = (level, message, details = {}) => {
@@ -159,6 +159,8 @@
     const LOANABLE_CATEGORIES = new Set(["temporary", "melee", "primary", "secondary", "tool", "defensive"]);
     // The desktop parent and detail grids need roughly 664px after their columns, gaps, and nested padding.
     const COMPACT_DETAIL_WIDTH = 680;
+    const NARROW_WIDGET_WIDTH = 480;
+    const TINY_WIDGET_WIDTH = 360;
     const PARENT_SORT_OPTIONS = [
         ["category", "Category"], ["distinctItems", "Items"], ["quantity", "Quantity"],
         ["value", "Category Value"], ["loaned", "Loaned"]
@@ -771,7 +773,10 @@
         const dashboard = state.dashboard;
         if (!dashboard) return;
         const width = dashboard.getBoundingClientRect().width || getViewportMetrics().width;
-        dashboard.dataset.compact = String(!state.isMinimized && width <= COMPACT_DETAIL_WIDTH);
+        const active = !state.isMinimized;
+        dashboard.dataset.compact = String(active && width <= COMPACT_DETAIL_WIDTH);
+        dashboard.dataset.narrow = String(active && width <= NARROW_WIDGET_WIDTH);
+        dashboard.dataset.tiny = String(active && width <= TINY_WIDGET_WIDTH);
     }
     function applyPosition(position = state.position) {
         const dashboard = state.dashboard;
@@ -841,6 +846,8 @@
             handles.forEach((handle) => { handle.style.display = "none"; });
             dashboard.style.cursor = "pointer";
             dashboard.dataset.compact = "false";
+            dashboard.dataset.narrow = "false";
+            dashboard.dataset.tiny = "false";
             if (isCompactRuntime()) {
                 dashboard.style.left = "auto";
                 dashboard.style.top = "calc(env(safe-area-inset-top) + 8px)";
@@ -1132,6 +1139,8 @@
                 #nic-wrapper[data-theme='light'] .nic-runtime,#nic-wrapper[data-theme='light'] .nic-settings p{color:#465d77}#nic-wrapper[data-theme='light'] .nic-runtime strong{color:#1f587c;border-color:#7591ad}
                 .nic-resize{position:absolute;z-index:4;width:24px;height:24px;touch-action:none}.nic-resize::after{content:'';position:absolute;width:9px;height:9px;pointer-events:none}.nic-resize[data-corner='top-left']{left:0;top:0;cursor:nwse-resize}.nic-resize[data-corner='top-left']::after{left:4px;top:4px;border-left:2px solid #7793bb;border-top:2px solid #7793bb}.nic-resize[data-corner='bottom-left']{left:0;bottom:0;cursor:nesw-resize}.nic-resize[data-corner='bottom-left']::after{left:4px;bottom:4px;border-left:2px solid #7793bb;border-bottom:2px solid #7793bb}.nic-resize[data-corner='bottom-right']{right:0;bottom:0;cursor:nwse-resize}.nic-resize[data-corner='bottom-right']::after{right:4px;bottom:4px;border-right:2px solid #7793bb;border-bottom:2px solid #7793bb}
                 #nic-wrapper[data-runtime='compact'] .nic-resize{display:none!important}#nic-wrapper[data-runtime='compact'] button{min-height:38px}#nic-wrapper[data-runtime='compact'] #nic-body{padding:8px}#nic-wrapper[data-runtime='compact'] .nic-layout{gap:8px}#nic-wrapper[data-runtime='compact'] .nic-summary-card{padding:8px}
+                #nic-wrapper[data-narrow='true'] .nic-card-title{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-card-title>div{flex:1 1 150px}#nic-wrapper[data-narrow='true'] .nic-card-title>button{margin-left:auto}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline span{grid-column:1/-1;overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}#nic-wrapper[data-narrow='true'] .nic-toolbar{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-toolbar input{width:auto;flex:1 1 170px}#nic-wrapper[data-narrow='true'] .nic-toolbar span{flex:1 1 100%}#nic-wrapper[data-narrow='true'] .nic-key-row,#nic-wrapper[data-narrow='true'] .nic-setting-actions{display:grid;grid-template-columns:1fr}#nic-wrapper[data-narrow='true'] .nic-key-row input{min-height:38px}#nic-wrapper[data-narrow='true'] .nic-compact-sort,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort{flex-wrap:wrap}#nic-wrapper[data-narrow='true'] .nic-compact-sort>span,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort>span{flex:1 0 100%}#nic-wrapper[data-narrow='true'] .nic-compact-sort select,#nic-wrapper[data-narrow='true'] .nic-compact-parent-sort select{flex:1 1 120px}
+                #nic-wrapper[data-narrow='true'] .nic-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#nic-wrapper[data-tiny='true'] .nic-summary-grid{grid-template-columns:1fr}#nic-wrapper[data-tiny='true'][data-compact='true'] .nic-category-row{grid-template-columns:1fr!important}#nic-wrapper[data-tiny='true'] .nic-runtime{flex-wrap:wrap}
                 #nic-wrapper[data-compact='true'] .nic-compact-sort,#nic-wrapper[data-compact='true'] .nic-compact-parent-sort{display:flex}
                 #nic-wrapper[data-compact='true'] .nic-parent-header{display:none}
                 #nic-wrapper[data-compact='true'] .nic-category-row{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:5px 12px!important;min-height:0;padding:9px 10px;font-size:10px;text-align:left}
