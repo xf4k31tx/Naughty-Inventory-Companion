@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/SharpSplinter/Naughty-Inventory-Companion
-// @version      1.2.12
+// @version      1.2.13
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       SharpSplinter [315311]
 // @license      MIT
@@ -27,7 +27,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.12";
+    const VERSION = "1.2.13";
     const BASE_URL = "https://api.torn.com/v2/";
     const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
     const NATIVE_REMINDER_ID = 6321;
@@ -256,6 +256,8 @@
     const COMPACT_DETAIL_WIDTH = 680;
     const NARROW_WIDGET_WIDTH = 480;
     const TINY_WIDGET_WIDTH = 360;
+    const MINIMIZED_ICON_SIZE = 36;
+    const MINIMIZED_ICON_GUTTER = 8;
     const PARENT_SORT_OPTIONS = [
         ["category", "Category"], ["distinctItems", "Items"], ["quantity", "Quantity"],
         ["value", "Category Value"], ["loaned", "Loaned"]
@@ -281,6 +283,7 @@
         isMinimized: false,
         windowSizes: {},
         position: null,
+        minimizedPosition: null,
         inventory: null,
         refreshInFlight: false,
         exportInFlight: false,
@@ -1175,7 +1178,8 @@
         return {
             activeTab: state.activeTab, theme: state.theme, isMinimized: state.isMinimized,
             windowSizes: state.windowSizes, parentSort: state.parentSort, itemSort: state.itemSort,
-            expandedCategories: [...state.expandedCategories], filter: state.filter
+            expandedCategories: [...state.expandedCategories], filter: state.filter,
+            minimizedPosition: state.minimizedPosition
         };
     }
     function currentStoredValues() {
@@ -1271,6 +1275,7 @@
         state.isMinimized = dashboard.isMinimized === true;
         state.windowSizes = isStorageRecord(dashboard.windowSizes) ? dashboard.windowSizes : {};
         state.position = data[STORAGE.position] ?? null;
+        state.minimizedPosition = isStorageRecord(dashboard.minimizedPosition) ? dashboard.minimizedPosition : null;
         state.inventory = data[STORAGE.inventory] ?? null;
         state.parentSort = dashboard.parentSort?.key ? dashboard.parentSort : state.parentSort;
         state.itemSort = dashboard.itemSort?.key ? dashboard.itemSort : state.itemSort;
@@ -1369,9 +1374,62 @@
         dashboard.dataset.narrow = String(active && width <= NARROW_WIDGET_WIDTH);
         dashboard.dataset.tiny = String(active && width <= TINY_WIDGET_WIDTH);
     }
+    function getViewportPositionBounds(width, height) {
+        const viewport = getViewportMetrics();
+        const minX = viewport.left;
+        const minY = viewport.top;
+        return {
+            minX,
+            minY,
+            maxX: Math.max(minX, viewport.left + viewport.width - width),
+            maxY: Math.max(minY, viewport.top + viewport.height - height)
+        };
+    }
+    function defaultMinimizedPosition() {
+        const bounds = getViewportPositionBounds(MINIMIZED_ICON_SIZE, MINIMIZED_ICON_SIZE);
+        return {
+            x: Math.max(bounds.minX, bounds.maxX - MINIMIZED_ICON_GUTTER),
+            y: Math.min(bounds.maxY, bounds.minY + MINIMIZED_ICON_GUTTER)
+        };
+    }
+    function applyMinimizedPosition(position = state.minimizedPosition) {
+        const dashboard = state.dashboard;
+        if (!dashboard) return;
+        applyRuntimePresentation();
+        const rect = dashboard.getBoundingClientRect();
+        const width = Math.max(1, rect.width || MINIMIZED_ICON_SIZE);
+        const height = Math.max(1, rect.height || MINIMIZED_ICON_SIZE);
+        const bounds = getViewportPositionBounds(width, height);
+        const fallback = defaultMinimizedPosition();
+        const rawX = Number(position?.x);
+        const rawY = Number(position?.y);
+        const x = clamp(Number.isFinite(rawX) ? rawX : fallback.x, bounds.minX, bounds.maxX);
+        const y = clamp(Number.isFinite(rawY) ? rawY : fallback.y, bounds.minY, bounds.maxY);
+        dashboard.style.right = "auto";
+        dashboard.style.bottom = "auto";
+        dashboard.style.left = x + "px";
+        dashboard.style.top = y + "px";
+    }
+    function saveMinimizedPosition() {
+        const dashboard = state.dashboard;
+        if (!dashboard) return;
+        const rect = dashboard.getBoundingClientRect();
+        const viewport = getViewportMetrics();
+        const bounds = getViewportPositionBounds(Math.max(1, rect.width), Math.max(1, rect.height));
+        state.minimizedPosition = {
+            x: clamp(rect.left + viewport.left, bounds.minX, bounds.maxX),
+            y: clamp(rect.top + viewport.top, bounds.minY, bounds.maxY)
+        };
+        saveDashboardState();
+        applyMinimizedPosition();
+    }
     function applyPosition(position = state.position) {
         const dashboard = state.dashboard;
         if (!dashboard) return;
+        if (state.isMinimized) {
+            applyMinimizedPosition();
+            return;
+        }
         if (isCompactRuntime() && !state.isMinimized) {
             applyCompactViewport();
             return;
@@ -1404,7 +1462,10 @@
         saveDashboardState();
     }
     function applySize() {
-        if (state.isMinimized) return;
+        if (state.isMinimized) {
+            applyMinimizedPosition();
+            return;
+        }
         const dashboard = state.dashboard;
         if (isCompactRuntime()) {
             applyCompactViewport();
@@ -1419,6 +1480,7 @@
     function applyWidgetView() {
         const dashboard = state.dashboard;
         const body = dashboard.querySelector("#nic-body");
+        const dragHandle = dashboard.querySelector("#nic-drag");
         const title = dashboard.querySelector("#nic-title");
         const minimize = dashboard.querySelector("#nic-minimize");
         const handles = dashboard.querySelectorAll(".nic-resize");
@@ -1439,14 +1501,8 @@
             dashboard.dataset.compact = "false";
             dashboard.dataset.narrow = "false";
             dashboard.dataset.tiny = "false";
-            if (isCompactRuntime()) {
-                dashboard.style.left = "auto";
-                dashboard.style.top = "calc(env(safe-area-inset-top) + 8px)";
-                dashboard.style.right = "calc(env(safe-area-inset-right) + 8px)";
-                dashboard.style.bottom = "auto";
-            } else {
-                applyPosition();
-            }
+            dragHandle.title = "Tap to open · drag to move";
+            applyMinimizedPosition();
         } else {
             body.style.setProperty("display", "flex", "important");
             dashboard.style.minWidth = "";
@@ -1458,6 +1514,7 @@
             minimize.style.display = "grid";
             handles.forEach((handle) => { handle.style.display = isCompactRuntime() ? "none" : "block"; });
             dashboard.style.cursor = "";
+            dragHandle.title = isCompactRuntime() ? "" : "Drag to move";
             applySize();
             applyCompactDetailLayout();
         }
@@ -1605,8 +1662,15 @@
         const usePointerEvents = typeof window.PointerEvent === "function";
         const events = usePointerEvents ? { down: "pointerdown", move: "pointermove", up: "pointerup", cancel: "pointercancel" } : { down: "mousedown", move: "mousemove", up: "mouseup", cancel: null };
         let dragging = false, didDrag = false, dragStart = null, dragOffsetX = 0, dragOffsetY = 0, pointerId = null;
+        const restoreMinimizedWidget = () => {
+            if (!state.isMinimized) return;
+            state.isMinimized = false;
+            saveDashboardState();
+            applyWidgetView();
+            render();
+        };
         dragHandle.addEventListener(events.down, (event) => {
-            if (isCompactRuntime() || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
+            if ((!state.isMinimized && isCompactRuntime()) || event.target.closest("#nic-minimize") || ("button" in event && event.button !== 0)) return;
             const rect = dashboard.getBoundingClientRect();
             dragging = true;
             didDrag = false;
@@ -1620,22 +1684,33 @@
             if (!dragging || (usePointerEvents && event.pointerId !== pointerId)) return;
             if (Math.abs(event.clientX - dragStart.x) > 3 || Math.abs(event.clientY - dragStart.y) > 3) didDrag = true;
             const rect = dashboard.getBoundingClientRect();
-            dashboard.style.left = clamp(event.clientX - dragOffsetX, 0, window.innerWidth - rect.width) + "px";
-            dashboard.style.top = clamp(event.clientY - dragOffsetY, 0, window.innerHeight - rect.height) + "px";
+            const viewport = getViewportMetrics();
+            const bounds = getViewportPositionBounds(rect.width, rect.height);
+            dashboard.style.right = "auto";
+            dashboard.style.bottom = "auto";
+            dashboard.style.left = clamp(viewport.left + event.clientX - dragOffsetX, bounds.minX, bounds.maxX) + "px";
+            dashboard.style.top = clamp(viewport.top + event.clientY - dragOffsetY, bounds.minY, bounds.maxY) + "px";
         });
-        document.addEventListener(events.up, (event) => {
+        const finishDrag = (event, cancelled = false) => {
             if (!dragging || (usePointerEvents && event.pointerId !== pointerId)) return;
-            if (usePointerEvents) dragHandle.releasePointerCapture?.(event.pointerId);
-            if (didDrag) savePosition();
+            if (usePointerEvents) {
+                try { dragHandle.releasePointerCapture?.(event.pointerId); } catch {}
+            }
+            const restore = state.isMinimized && !didDrag && !cancelled;
+            if (didDrag) {
+                if (state.isMinimized) saveMinimizedPosition();
+                else savePosition();
+            }
             dragging = false;
             pointerId = null;
-        });
+            if (restore) restoreMinimizedWidget();
+            else if (didDrag) window.setTimeout(() => { didDrag = false; }, 0);
+        };
+        document.addEventListener(events.up, (event) => finishDrag(event));
+        if (events.cancel) document.addEventListener(events.cancel, (event) => finishDrag(event, true));
         dashboard.addEventListener("click", () => {
             if (!state.isMinimized || didDrag) return;
-            state.isMinimized = false;
-            saveDashboardState();
-            applyWidgetView();
-            render();
+            restoreMinimizedWidget();
         });
         dashboard.querySelector("#nic-minimize").addEventListener("click", (event) => {
             event.stopPropagation();
@@ -1714,7 +1789,7 @@
                 #nic-drag{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:8px 11px;background:linear-gradient(100deg,#1b2a43,#28446a);border-bottom:1px solid #4e6687;cursor:move;user-select:none;touch-action:none}
                 #nic-wrapper[data-theme='light'] #nic-drag{background:linear-gradient(100deg,#bbcadd,#d3dee9);border-color:#778ba5}
                 #nic-wrapper[data-runtime='compact'] #nic-drag{cursor:default;touch-action:manipulation}
-                #nic-wrapper[data-minimized='true'] #nic-drag{height:36px;min-height:36px;padding:0;border:0;justify-content:center;cursor:pointer}
+                #nic-wrapper[data-minimized='true'] #nic-drag{height:36px;min-height:36px;padding:0;border:0;justify-content:center;cursor:pointer;touch-action:none}
                 #nic-title{font-size:12px;font-weight:800;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
                 #nic-minimize{display:grid;width:42px;height:36px;min-width:42px;flex:0 0 42px;place-items:center;border:1px solid #7793bb;border-radius:8px;background:#294564;color:#fff;font-size:21px;font-weight:750;line-height:1;cursor:pointer;touch-action:manipulation}
                 #nic-wrapper[data-theme='light'] #nic-minimize{background:#dce7f1;color:#1c2a3e;border-color:#718aa7}
@@ -1806,6 +1881,7 @@
         state.isMinimized = dashboard?.isMinimized === true;
         state.windowSizes = dashboard?.windowSizes && typeof dashboard.windowSizes === "object" ? dashboard.windowSizes : {};
         state.position = stored[STORAGE.position] ?? null;
+        state.minimizedPosition = dashboard?.minimizedPosition && typeof dashboard.minimizedPosition === "object" ? dashboard.minimizedPosition : null;
         state.inventory = stored[STORAGE.inventory] ?? null;
         state.parentSort = dashboard?.parentSort?.key ? dashboard.parentSort : state.parentSort;
         state.itemSort = dashboard?.itemSort?.key ? dashboard.itemSort : state.itemSort;

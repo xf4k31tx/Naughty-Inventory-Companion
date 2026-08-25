@@ -13,7 +13,7 @@ This open-source userscript helps Torn players understand their own inventory wi
 - Lets you expand a category to inspect individual items, including quantity, unit value, item total, equipped state, perks/bonuses, weapon mods, and owned or loaned status where applicable.
 - Searches both category and item names.
 - Sorts categories and expanded item rows. Desktop headers are clickable; narrow layouts use compact sort controls so all fields remain usable.
-- Remembers expanded categories, filters, sort choices, theme, panel position, and panel size.
+- Remembers expanded categories, filters, sort choices, theme, panel position, panel size, and the dragged minimized-icon position.
 - Uses a compact responsive layout on TornPDA and constrained desktop viewports: effective width ≤700px, effective height ≤520px, or scale >1.1 at ≤960px. It follows safe areas and the active visual viewport.
 
 ## Installation
@@ -53,7 +53,7 @@ On TornPDA, either action opens the native share sheet from the user’s tap thr
 
 ## Desktop and TornPDA
 
-On desktop, the panel can be moved, resized, minimized, and snapped. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation. Responsive tiers use the actual panel width: details become labeled cards at 680px or below, controls and cards wrap at 480px or below, and summaries/categories become single-column at 360px or below. Desktop tables remain intact above those thresholds. On TornPDA and compact viewports, expanded inventory items flow into the panel body so the main window provides one continuous scroll instead of a separate nested list scroll. Desktop retains its independent category-list scroll. Scrollbar tracks are hidden while wheel, keyboard, and touch scrolling remain native.
+On desktop, the panel can be moved, resized, minimized, and snapped. Tapping/clicking anywhere on the minimized icon restores the panel; dragging that icon moves it and remembers the location for later minimizations. On TornPDA, it detects the native runtime at startup and follows the usable viewport, device safe areas, and orientation; the minimized icon remains touch-draggable. Responsive tiers use the actual panel width: details become labeled cards at 680px or below, controls and cards wrap at 480px or below, and summaries/categories become single-column at 360px or below. Desktop tables remain intact above those thresholds. On TornPDA and compact viewports, expanded inventory items flow into the panel body so the main window provides one continuous scroll instead of a separate nested list scroll. Desktop retains its independent category-list scroll. Scrollbar tracks are hidden while wheel, keyboard, and touch scrolling remain native.
 
 ## TornPDA compatibility and storage
 
