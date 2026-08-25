@@ -4,7 +4,8 @@ const assert = require("assert");
 const source = fs.readFileSync("Naughty Inventory Companion.user.js", "utf8");
 const readme = fs.readFileSync("README.md", "utf8");
 
-assert.match(source, /@version\s+1\.2\.10/);
+assert.match(source, /@version\s+1\.2\.11/);
+assert.match(source, /@license\s+MIT/);
 assert.match(source, /https:\/\/github\.com\/SharpSplinter\/Naughty-Inventory-Companion/);
 assert.match(source, /https:\/\/raw\.githubusercontent\.com\/SharpSplinter\/Naughty-Inventory-Companion\/main/);
 assert.doesNotMatch(source + readme, /xf4k31tx/);
