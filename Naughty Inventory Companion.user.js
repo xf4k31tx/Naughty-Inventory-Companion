@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/SharpSplinter/Naughty-Inventory-Companion
-// @version      1.2.13
+// @version      1.2.14
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       SharpSplinter [315311]
 // @license      MIT
@@ -27,7 +27,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.13";
+    const VERSION = "1.2.14";
     const BASE_URL = "https://api.torn.com/v2/";
     const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
     const NATIVE_REMINDER_ID = 6321;
@@ -295,6 +295,16 @@
         expandedCategories: new Set(),
         filter: ""
     };
+    const KEYBOARD_VIEWPORT_GUARD = {
+        stable: null,
+        focusedControl: null,
+        active: false,
+        releaseUntil: 0,
+        releaseTimer: 0
+    };
+    const KEYBOARD_VIEWPORT_MIN_HEIGHT_DELTA = 120;
+    const KEYBOARD_VIEWPORT_HEIGHT_RATIO = .16;
+    const KEYBOARD_VIEWPORT_WIDTH_RATIO = .12;
     const PERSISTENCE = {
         pdaStorage: null,
         pdaCache: Object.create(null),
@@ -1312,14 +1322,113 @@
             top: Math.max(0, Math.round(viewport?.offsetTop || 0))
         };
     }
+    function cloneViewportMetrics(viewport) {
+        return {
+            width: Math.max(1, Number(viewport?.width || 1)),
+            height: Math.max(1, Number(viewport?.height || 1)),
+            left: Math.max(0, Number(viewport?.left || 0)),
+            top: Math.max(0, Number(viewport?.top || 0))
+        };
+    }
+    function isVirtualKeyboardViewportChange(stable, current) {
+        if (!stable || !current) return false;
+        const heightLoss = Number(stable.height || 0) - Number(current.height || 0);
+        const minimumHeightLoss = Math.max(KEYBOARD_VIEWPORT_MIN_HEIGHT_DELTA, Math.round(Number(stable.height || 0) * KEYBOARD_VIEWPORT_HEIGHT_RATIO));
+        const maximumWidthDrift = Math.max(48, Math.round(Number(stable.width || 0) * KEYBOARD_VIEWPORT_WIDTH_RATIO));
+        return heightLoss >= minimumHeightLoss && Math.abs(Number(stable.width || 0) - Number(current.width || 0)) <= maximumWidthDrift;
+    }
+    function keyboardViewportGuardIsEngaged() {
+        return Boolean(KEYBOARD_VIEWPORT_GUARD.focusedControl) || KEYBOARD_VIEWPORT_GUARD.releaseUntil > Date.now();
+    }
+    function updateStableViewport(viewport = getViewportMetrics()) {
+        const stable = cloneViewportMetrics(viewport);
+        if (!keyboardViewportGuardIsEngaged()) {
+            KEYBOARD_VIEWPORT_GUARD.stable = stable;
+            KEYBOARD_VIEWPORT_GUARD.active = false;
+            if (state.dashboard) state.dashboard.dataset.keyboard = "false";
+        }
+        return stable;
+    }
+    function presentationViewportMetrics() {
+        const current = getViewportMetrics();
+        const guard = KEYBOARD_VIEWPORT_GUARD;
+        if (!keyboardViewportGuardIsEngaged()) return updateStableViewport(current);
+        if (!guard.stable) guard.stable = cloneViewportMetrics(current);
+        if (!guard.active && isVirtualKeyboardViewportChange(guard.stable, current)) {
+            guard.active = true;
+            if (state.dashboard) state.dashboard.dataset.keyboard = "true";
+            logDebug("Virtual keyboard viewport change detected; keeping the companion at its stable size.", {
+                before: guard.stable.width + "x" + guard.stable.height,
+                after: current.width + "x" + current.height
+            });
+        }
+        return guard.active ? cloneViewportMetrics(guard.stable) : current;
+    }
+    function isTextEntryControl(element) {
+        if (!element || typeof element.matches !== "function" || element.disabled || element.readOnly) return false;
+        if (element.matches("textarea,[contenteditable=''],[contenteditable='true']")) return true;
+        if (!element.matches("input")) return false;
+        return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(String(element.type || "text").toLowerCase());
+    }
+    function requestKeyboardOverlay() {
+        const virtualKeyboard = navigator.virtualKeyboard;
+        if (!virtualKeyboard || !("overlaysContent" in virtualKeyboard)) return false;
+        try {
+            virtualKeyboard.overlaysContent = true;
+            return true;
+        } catch (error) {
+            logDebug("Native virtual-keyboard overlay mode is unavailable; using the viewport guard.", { category: safeErrorCategory(error) });
+            return false;
+        }
+    }
+    function beginKeyboardViewportGuard(control) {
+        if (!state.dashboard || state.isMinimized || !isCompactRuntime() || !isTextEntryControl(control)) return;
+        const guard = KEYBOARD_VIEWPORT_GUARD;
+        if (guard.releaseTimer) window.clearTimeout(guard.releaseTimer);
+        guard.releaseTimer = 0;
+        if (!guard.active || !guard.stable) guard.stable = cloneViewportMetrics(getViewportMetrics());
+        guard.focusedControl = control;
+        guard.releaseUntil = 0;
+        requestKeyboardOverlay();
+    }
+    function endKeyboardViewportGuard(control) {
+        const guard = KEYBOARD_VIEWPORT_GUARD;
+        if (guard.focusedControl && control && guard.focusedControl !== control) return;
+        guard.focusedControl = null;
+        guard.releaseUntil = Date.now() + 360;
+        if (guard.releaseTimer) window.clearTimeout(guard.releaseTimer);
+        guard.releaseTimer = window.setTimeout(() => {
+            guard.releaseTimer = 0;
+            if (guard.focusedControl) return;
+            guard.releaseUntil = 0;
+            guard.active = false;
+            guard.stable = cloneViewportMetrics(getViewportMetrics());
+            if (state.dashboard) state.dashboard.dataset.keyboard = "false";
+            if (!state.isMinimized) {
+                applyRuntimePresentation();
+                applySize();
+                applyCompactDetailLayout();
+            }
+        }, 360);
+    }
+    function resetKeyboardViewportGuard() {
+        const guard = KEYBOARD_VIEWPORT_GUARD;
+        if (guard.releaseTimer) window.clearTimeout(guard.releaseTimer);
+        guard.stable = cloneViewportMetrics(getViewportMetrics());
+        guard.focusedControl = null;
+        guard.active = false;
+        guard.releaseUntil = 0;
+        guard.releaseTimer = 0;
+        if (state.dashboard) state.dashboard.dataset.keyboard = "false";
+    }
     function screenSizeLabel() {
-        const viewport = getViewportMetrics();
+        const viewport = presentationViewportMetrics();
         const orientation = viewport.width >= viewport.height ? "landscape" : "portrait";
         const scale = Math.round((Number(window.visualViewport?.scale) || 1) * 100);
         return formatInteger(viewport.width) + " × " + formatInteger(viewport.height) + " · " + orientation + " · " + formatInteger(scale) + "%";
     }
     function runtimeInfo() {
-        const viewport = getViewportMetrics();
+        const viewport = presentationViewportMetrics();
         const scale = Number(window.visualViewport?.scale) || 1;
         const viewportCompact = viewport.width <= 700 || viewport.height <= 520 || (scale > 1.1 && viewport.width <= 960);
         const compact = RUNTIME.isTornPDA || viewportCompact;
@@ -1341,7 +1450,7 @@
         const dashboard = state.dashboard;
         if (!dashboard) return;
         applyRuntimePresentation();
-        const viewport = getViewportMetrics();
+        const viewport = presentationViewportMetrics();
         dashboard.style.setProperty("--nic-vv-width", viewport.width + "px");
         dashboard.style.setProperty("--nic-vv-height", viewport.height + "px");
         dashboard.style.setProperty("--nic-vv-left", viewport.left + "px");
@@ -1758,10 +1867,16 @@
         };
         document.addEventListener(events.up, finishResize);
         if (events.cancel) document.addEventListener(events.cancel, finishResize);
+        dashboard.addEventListener("pointerdown", (event) => beginKeyboardViewportGuard(event.target), true);
+        dashboard.addEventListener("focusin", (event) => beginKeyboardViewportGuard(event.target));
+        dashboard.addEventListener("focusout", (event) => endKeyboardViewportGuard(event.target));
         let viewportFrame = 0;
-        const syncViewport = () => {
+        const syncViewport = (event) => {
+            if (event?.type === "orientationchange") resetKeyboardViewportGuard();
             cancelAnimationFrame(viewportFrame);
             viewportFrame = requestAnimationFrame(() => {
+                presentationViewportMetrics();
+                if (KEYBOARD_VIEWPORT_GUARD.active && keyboardViewportGuardIsEngaged() && isCompactRuntime()) return;
                 const priorMode = dashboard.dataset.runtime;
                 applyRuntimePresentation();
                 applySize();
@@ -1780,6 +1895,7 @@
         const dashboard = document.createElement("aside");
         dashboard.id = "nic-wrapper";
         dashboard.dataset.runtime = runtimeInfo().mode;
+        dashboard.dataset.keyboard = "false";
         dashboard.innerHTML = `
             <style>
                 #nic-wrapper{position:fixed;z-index:999999;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(150deg,rgba(20,28,42,.985),rgba(13,19,30,.985));color:#edf4ff;border:1px solid #40516d;border-radius:14px;box-shadow:0 16px 38px rgba(0,0,0,.55);font-family:Inter,Segoe UI,Arial,sans-serif;contain:layout style}
@@ -1922,7 +2038,8 @@
         globalThis.__NIC_STORAGE_TEST__.hooks = {
             STORAGE, PERSISTENCE, loadStoredValues, persistValues, flushPersistValues,
             deletePersistedValues, resolveLegacyStoragePreference, createBackup, validateBackup,
-            state, inventoryExportData, createInventoryCsv, createInventorySpreadsheet
+            state, inventoryExportData, createInventoryCsv, createInventorySpreadsheet,
+            isVirtualKeyboardViewportChange
         };
     } else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void bootstrap());
     else void bootstrap();

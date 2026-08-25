@@ -4,7 +4,7 @@ const assert = require("assert");
 const source = fs.readFileSync("Naughty Inventory Companion.user.js", "utf8");
 const readme = fs.readFileSync("README.md", "utf8");
 
-assert.match(source, /@version\s+1\.2\.13/);
+assert.match(source, /@version\s+1\.2\.14/);
 assert.match(source, /@license\s+MIT/);
 assert.match(source, /https:\/\/github\.com\/SharpSplinter\/Naughty-Inventory-Companion/);
 assert.match(source, /https:\/\/raw\.githubusercontent\.com\/SharpSplinter\/Naughty-Inventory-Companion\/main/);
@@ -97,6 +97,15 @@ assert.match(readme, /Save as Spreadsheet/i);
 assert.match(source, /com\\\.manuito\\\.tornpda/);
 assert.doesNotMatch(source, /maxTouchPoints|ontouchstart/);
 assert.match(source, /window\.visualViewport/);
+assert.match(source, /const KEYBOARD_VIEWPORT_GUARD = \{/);
+assert.match(source, /function isVirtualKeyboardViewportChange\(stable, current\)/);
+assert.match(source, /function presentationViewportMetrics\(\)/);
+assert.match(source, /navigator\.virtualKeyboard/);
+assert.match(source, /virtualKeyboard\.overlaysContent = true/);
+assert.match(source, /dashboard\.addEventListener\("focusin", \(event\) => beginKeyboardViewportGuard\(event\.target\)\)/);
+assert.match(source, /dashboard\.addEventListener\("focusout", \(event\) => endKeyboardViewportGuard\(event\.target\)\)/);
+assert.match(source, /event\?\.type === "orientationchange"\) resetKeyboardViewportGuard\(\)/);
+assert.match(source, /KEYBOARD_VIEWPORT_GUARD\.active && keyboardViewportGuardIsEngaged\(\) && isCompactRuntime\(\)\) return/);
 assert.match(source, /safe-area-inset/);
 assert.match(source, /pointerdown/);
 assert.match(source, /pointercancel/);
@@ -150,4 +159,4 @@ assert.match(source, /if \(index < INVENTORY_CATEGORIES\.length - 1\) await new 
 assert.doesNotMatch(source, /setInterval\(/);
 assert.doesNotMatch(source, /scheduleAutoRefresh/);
 
-console.log("Inventory regression checks passed: data, exports, manual-only refresh, and TornPDA layout guards.");
+console.log("Inventory regression checks passed: data, exports, manual-only refresh, keyboard overlay, and TornPDA layout guards.");

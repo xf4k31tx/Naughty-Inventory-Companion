@@ -120,6 +120,14 @@ async function inventoryExportFormats() {
     assert.match(xlsxText, /Naughty Inventory Companion snapshot/);
 }
 
+async function keyboardViewportGuard() {
+    const initial = harness();
+    const change = initial.hooks.isVirtualKeyboardViewportChange;
+    assert.strictEqual(change({ width: 390, height: 844 }, { width: 390, height: 512 }), true);
+    assert.strictEqual(change({ width: 390, height: 844 }, { width: 390, height: 774 }), false);
+    assert.strictEqual(change({ width: 390, height: 844 }, { width: 844, height: 390 }), false);
+}
+
 (async () => {
     await nativePreferredRead();
     await oneTimeMigration();
@@ -127,5 +135,6 @@ async function inventoryExportFormats() {
     await deletesBothStores();
     await backupValidation();
     await inventoryExportFormats();
-    console.log("Inventory storage adapter checks passed: native preference, migration, quota fallback, queue, deletes, backup validation, and export formats.");
+    await keyboardViewportGuard();
+    console.log("Inventory storage adapter checks passed: native preference, migration, quota fallback, queue, deletes, backup validation, export formats, and keyboard viewport guard.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
