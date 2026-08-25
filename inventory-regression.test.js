@@ -4,7 +4,7 @@ const assert = require("assert");
 const source = fs.readFileSync("Naughty Inventory Companion.user.js", "utf8");
 const readme = fs.readFileSync("README.md", "utf8");
 
-assert.match(source, /@version\s+1\.2\.11/);
+assert.match(source, /@version\s+1\.2\.12/);
 assert.match(source, /@license\s+MIT/);
 assert.match(source, /https:\/\/github\.com\/SharpSplinter\/Naughty-Inventory-Companion/);
 assert.match(source, /https:\/\/raw\.githubusercontent\.com\/SharpSplinter\/Naughty-Inventory-Companion\/main/);
@@ -114,10 +114,13 @@ assert.match(source, /document\.addEventListener\(events\.cancel, finishResize\)
 assert.match(source, /#nic-wrapper\[data-runtime='compact'\] \.nic-resize\{display:none!important\}/);
 assert.match(source, /#nic-body\{[^}]*overflow-y:auto;overflow-x:hidden/);
 assert.match(source, /\.nic-category-table\{[^}]*overflow-y:auto;overflow-x:hidden/);
+assert.match(source, /#nic-wrapper\[data-runtime='compact'\] #nic-content,#nic-wrapper\[data-runtime='compact'\] \.nic-layout\{flex:0 0 auto;min-height:auto\}/);
+assert.match(source, /#nic-wrapper\[data-runtime='compact'\] \.nic-category-table\{flex:0 0 auto;min-height:0;max-height:none;overflow:visible;overscroll-behavior:auto\}/);
+assert.doesNotMatch(source, /#nic-wrapper\[data-runtime='compact'\] \.nic-category-table\{min-height:clamp\(70px,24dvh,132px\)\}/);
 assert.match(source, /#nic-body,.nic-category-table\{scrollbar-width:none;scrollbar-color:transparent transparent;-ms-overflow-style:none;-webkit-overflow-scrolling:touch;touch-action:pan-y pinch-zoom\}/);
 assert.match(source, /#nic-body::-webkit-scrollbar,.nic-category-table::-webkit-scrollbar\{display:none;width:0;height:0;background:transparent\}/);
 assert.match(source, /#nic-body::-webkit-scrollbar-track,.nic-category-table::-webkit-scrollbar-track/);
-assert.match(readme, /only intentional scroll regions; their tracks are hidden while wheel, keyboard, and touch scrolling remain native/i);
+assert.match(readme, /on TornPDA and compact viewports, expanded inventory items flow into the panel body so the main window provides one continuous scroll/i);
 assert.match(source, /#nic-wrapper\[data-narrow='true'\] \.nic-card-title\{flex-wrap:wrap\}/);
 assert.match(source, /#nic-wrapper\[data-narrow='true'\] \.nic-toolbar\{flex-wrap:wrap\}/);
 assert.match(source, /#nic-wrapper\[data-narrow='true'\] \.nic-key-row,#nic-wrapper\[data-narrow='true'\] \.nic-setting-actions,#nic-wrapper\[data-narrow='true'\] \.nic-backup-actions\{display:grid;grid-template-columns:1fr\}/);
