@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/SharpSplinter/Naughty-Inventory-Companion
-// @version      1.2.17
+// @version      1.2.18
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       SharpSplinter [315311]
 // @license      MIT
