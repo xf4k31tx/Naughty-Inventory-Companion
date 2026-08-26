@@ -249,9 +249,9 @@
         "medical", "drug", "booster", "alcohol", "candy", "enhancer", "jewelry",
         "plushie", "flower", "temporary", "clothing", "car", "artifact", "book",
         "special", "other", "melee", "primary", "secondary", "tool", "defensive",
-        "material", "collectible"
+        "material", "collectible", "supply pack"
     ];
-    const LOANABLE_CATEGORIES = new Set(["temporary", "melee", "primary", "secondary", "tool", "defensive"]);
+    const LOANABLE_CATEGORIES = new Set(["temporary", "melee", "primary", "secondary", "tool", "defensive", "drug", "booster", "alcohol", "candy"]);
     // The desktop parent and detail grids need roughly 664px after their columns, gaps, and nested padding.
     const COMPACT_DETAIL_WIDTH = 680;
     const NARROW_WIDGET_WIDTH = 480;
