@@ -29,6 +29,7 @@
 
     const VERSION = GM_info.script.version;
     console.log('Running script version: ${VERSION}');
+    
     const BASE_URL = "https://api.torn.com/v2/";
     const PDA_INJECTED_API_KEY = "_###PDA-APIKEY###_";
     const NATIVE_REMINDER_ID = 6321;
