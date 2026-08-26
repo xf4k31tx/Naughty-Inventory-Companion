@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Naughty Inventory Companion
 // @namespace    https://github.com/SharpSplinter/Naughty-Inventory-Companion
-// @version      1.2.18
+// @version      1.2.19
 // @description  Manual Torn inventory tracker with live market values, equipment perks, mods, and loan status.
 // @author       SharpSplinter [315311]
 // @license      MIT
@@ -27,7 +27,7 @@
 (function () {
     "use strict";
 
-    const Version = (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script.version : "1.0.0";
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script.version : "1.0.0";
     console.log('Running script version: ${VERSION}');
     
     const BASE_URL = "https://api.torn.com/v2/";
