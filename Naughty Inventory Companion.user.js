@@ -229,6 +229,44 @@
             textColor: { a: 255, r: 255, g: 255, b: 255 }
         }).catch((error) => logDebug("Native toast was unavailable.", { category: safeErrorCategory(error) }));
     }
+    function standardFeedbackLayer() {
+        const dashboard = state.dashboard;
+        if (!dashboard) return null;
+        if (!dashboard.querySelector("#nic-standard-feedback-style")) {
+            const style = document.createElement("style");
+            style.id = "nic-standard-feedback-style";
+            style.textContent = "#nic-wrapper .nic-tab-status{display:flex;align-items:center;flex-wrap:wrap;gap:5px 8px;min-width:0;padding:8px 9px;border:1px solid #3c587b;border-radius:8px;background:rgba(14,32,54,.62);color:#aac1dc;font-size:10px;line-height:1.35}#nic-wrapper .nic-tab-status strong{color:#9de3aa;font-size:10px}#nic-wrapper .nic-tab-status time{min-width:0;color:#9baec6;overflow-wrap:anywhere}#nic-wrapper .nic-tab-status[data-state='partial'] strong{color:#ffd276}#nic-wrapper .nic-tab-status[data-state='stale'] strong,#nic-wrapper .nic-tab-status[data-state='not-updated'] strong{color:#ff9ca8}#nic-wrapper #nic-toast-stack{position:absolute;z-index:12;right:10px;bottom:10px;display:grid;gap:7px;width:min(340px,calc(100% - 20px));pointer-events:none}#nic-wrapper .nic-toast{padding:9px 11px;border:1px solid #4a668d;border-radius:8px;background:rgba(20,41,68,.97);color:#f7fbff;font-size:11px;font-weight:700;line-height:1.35;box-shadow:0 8px 20px rgba(0,0,0,.34)}#nic-wrapper .nic-toast[data-tone='green']{border-color:#3d8b64;background:rgba(25,85,61,.97)}#nic-wrapper .nic-toast[data-tone='red']{border-color:#a34b55;background:rgba(120,42,50,.97)}#nic-wrapper .nic-topline .nic-activity{overflow:visible;text-overflow:clip;white-space:normal}#nic-wrapper[data-narrow='true'] .nic-topline{grid-template-columns:minmax(0,1fr) auto}#nic-wrapper[data-narrow='true'] .nic-topline .nic-activity{grid-column:1/-1}#nic-wrapper[data-compact='true'] .nic-tab-status{align-items:flex-start;flex-direction:column;gap:3px}#nic-wrapper[data-theme='light'] .nic-tab-status{border-color:#9eb2c9;background:#e7eff8;color:#465c76}#nic-wrapper[data-theme='light'] .nic-tab-status time{color:#506783}#nic-wrapper[data-theme='light'] .nic-toast{border-color:#8097b4;background:#e6eef7;color:#142238}";
+            dashboard.append(style);
+        }
+        let stack = dashboard.querySelector("#nic-toast-stack");
+        if (!stack) {
+            stack = document.createElement("div");
+            stack.id = "nic-toast-stack";
+            stack.setAttribute("aria-live", "polite");
+            stack.setAttribute("aria-relevant", "additions");
+            dashboard.append(stack);
+        }
+        return stack;
+    }
+    function showToast(text, tone = "blue") {
+        const message = String(text || "").trim();
+        if (!message) return;
+        const stack = standardFeedbackLayer();
+        if (stack) {
+            const toast = document.createElement("div");
+            toast.className = "nic-toast";
+            toast.dataset.tone = tone;
+            toast.setAttribute("role", "status");
+            toast.textContent = message;
+            stack.append(toast);
+            const timer = window.setTimeout(() => {
+                toast.remove();
+                state.toastTimers.delete(timer);
+            }, 4200);
+            state.toastTimers.add(timer);
+        }
+        nativeToast(message, tone);
+    }
     async function scheduleNativeReminder() {
         const timestamp = Date.now() + 86400000;
         await nativeBridgeCall("scheduleNotification", {
@@ -289,6 +327,7 @@
         exportInFlight: false,
         status: "Manual refresh only.",
         error: "",
+        toastTimers: new Set(),
         dashboard: null,
         parentSort: { key: "value", direction: "desc" },
         itemSort: { key: "total", direction: "desc" },
@@ -335,6 +374,10 @@
         if (elapsed < 3600000) return Math.floor(elapsed / 60000) + "m ago";
         if (elapsed < 86400000) return Math.floor(elapsed / 3600000) + "h ago";
         return Math.floor(elapsed / 86400000) + "d ago";
+    };
+    const formatUtcTimestamp = (milliseconds) => {
+        const timestamp = Number(milliseconds || 0);
+        return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC") : "—";
     };
     const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
     const compareValues = (left, right, direction) => {
@@ -809,7 +852,7 @@
             };
             void persistValues({ [STORAGE.inventory]: state.inventory });
             state.status = "Live Torn market values loaded.";
-            nativeToast("Inventory refreshed: " + formatInteger(rows.length) + " items.", "green");
+            showToast("Inventory refreshed: " + formatInteger(rows.length) + " items.", "green");
             logInfo("Manual inventory refresh completed.", {
                 items: rows.length,
                 failedCategories: failures.length,
@@ -818,7 +861,7 @@
         } catch (error) {
             state.error = error.message || "Unable to refresh inventory";
             state.status = "Refresh failed.";
-            nativeToast("Inventory refresh failed. See the dashboard for details.", "red");
+            showToast("Inventory refresh failed. See the dashboard for details.", "red");
             logError("Manual inventory refresh failed.", { category: safeErrorCategory(error), durationMs: elapsedMilliseconds(refreshStartedAt) });
         } finally {
             state.refreshInFlight = false;
@@ -1123,12 +1166,12 @@
             if (share.native && !share.shared) throw new Error(share.message || "TornPDA could not open its share sheet.");
             if (!share.shared) downloadInventoryExport(bytes, fileName, mimeType);
             state.status = share.shared ? label + " opened in the TornPDA share sheet." : label + " downloaded.";
-            nativeToast(state.status, "green");
+            showToast(state.status, "green");
             logInfo("Inventory export completed.", { format: isSpreadsheet ? "xlsx" : "csv", transport: share.shared ? "TornPDA shareFile" : "desktop download", items: data.rows.length });
         } catch (error) {
             state.status = "Inventory export failed.";
             state.error = "Unable to create the " + label.toLowerCase() + " export.";
-            nativeToast(state.error, "red");
+            showToast(state.error, "red");
             logError("Inventory export failed.", { format: isSpreadsheet ? "xlsx" : "csv", category: safeErrorCategory(error) });
         } finally {
             state.exportInFlight = false;
@@ -1172,12 +1215,12 @@
     function settingsView() {
         const runtime = runtimeInfo();
         const usingInjectedKey = state.apiKeySource === "tornpda";
-        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Native TornPDA confirmation and viewport mode are checked independently'><span>Runtime</span><strong>" + runtimeInfo().label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
+        return "<section class='nic-settings nic-card'><div class='nic-card-title'><div><h2>Settings</h2><div class='nic-runtime' title='Runtime detection and measured layout are independent'><span>Runtime</span><strong>" + runtime.label + "</strong></div></div><button data-tab='inventory'>Inventory</button></div>" +
             "<label for='nic-api-key'>Torn API Key</label><div class='nic-key-row'><input id='nic-api-key' type='password' autocomplete='off' value='" +
             escapeHtml(usingInjectedKey ? "" : state.savedApiKey) + "' placeholder='" + (usingInjectedKey ? "Using TornPDA injected API key" : "Enter Torn API key") + "'><button data-action='save-key'>Save Key</button></div>" +
             (usingInjectedKey ? "<p class='nic-key-source'>A TornPDA injected API key is active and is never shown or stored by this companion.</p>" : "") +
             "<p>Inventory is manual-refresh only. Each refresh retrieves the current Torn item catalog market price, inventory categories, and equipped item bonuses/mods.</p>" +
-            "<dl class='nic-runtime-details'><div><dt>Runtime</dt><dd>" + escapeHtml(runtime.platform) + " / " + escapeHtml(runtime.mode) + " view</dd></div><div><dt>Screen Size</dt><dd>" + escapeHtml(screenSizeLabel()) + "</dd></div><div><dt>Storage Method</dt><dd>" + escapeHtml(storageMethodLabel()) + "</dd></div></dl>" +
+            "<dl class='nic-runtime-details'><div><dt>Runtime</dt><dd>" + escapeHtml(runtime.platform) + "</dd></div><div><dt>Screen Size</dt><dd>" + escapeHtml(screenSizeLabel()) + "</dd></div><div><dt>Layout Profile</dt><dd>" + escapeHtml(runtime.layout) + "</dd></div><div><dt>Storage Method</dt><dd>" + escapeHtml(storageMethodLabel()) + "</dd></div></dl>" +
             "<label class='nic-storage-toggle'><input id='nic-use-legacy-gm' type='checkbox'" + (PERSISTENCE.forceLegacyGM ? " checked" : "") + "><span>Use legacy GM storage</span></label>" +
             "<p class='nic-storage-help'>Unchecked uses TornPDA PDA_storage when available, with compatible GM storage as the fallback.</p>" +
             "<section class='nic-backup'><strong>Backup &amp; restore</strong><p>Download all local snapshots, history, preferences, and layout as a JSON backup. Loading a valid backup replaces this companion’s local data.</p><label class='nic-storage-toggle'><input id='nic-backup-include-key' type='checkbox'><span>Include saved API key</span></label><div class='nic-backup-actions'><button data-action='download-backup'" + (state.exportInFlight ? " disabled" : "") + ">Download Backup</button><button data-action='choose-backup'>Load Backup</button><input id='nic-backup-file' type='file' accept='application/json,.json' hidden></div></section>" +
@@ -1235,14 +1278,14 @@
         if (share.native && !share.shared) {
             state.status = "Inventory backup was not exported.";
             state.error = share.message || "TornPDA could not open the native share sheet.";
-            nativeToast(state.error, "red");
+            showToast(state.error, "red");
             render();
             return false;
         }
         if (!share.shared) downloadInventoryExport(bytes, fileName, "application/json;charset=utf-8");
         state.status = share.shared ? "Inventory backup opened in the TornPDA share sheet." : "Inventory backup downloaded.";
         state.error = "";
-        nativeToast(state.status, "green");
+        showToast(state.status, "green");
         render();
         return true;
         } finally {
@@ -1295,7 +1338,7 @@
         state.status = "Backup restored.";
         state.error = "";
         applyWidgetView();
-        nativeToast(state.status, "green");
+        showToast(state.status, "green");
         render();
     }
     async function loadBackupFile(file) {
@@ -1427,13 +1470,38 @@
         const scale = Math.round((Number(window.visualViewport?.scale) || 1) * 100);
         return formatInteger(viewport.width) + " × " + formatInteger(viewport.height) + " · " + orientation + " · " + formatInteger(scale) + "%";
     }
+    function layoutProfile() {
+        const viewport = presentationViewportMetrics();
+        const scale = Number(window.visualViewport?.scale) || 1;
+        const panelWidth = Number(state.dashboard?.getBoundingClientRect?.().width || 0);
+        const width = Math.max(1, Math.round(panelWidth || viewport.width));
+        if (width <= 360 || viewport.height <= 480) return "narrow";
+        if (width <= 520 || viewport.height <= 580 || (scale > 1.1 && width <= 760)) return "compact";
+        if (width <= 920) return "standard";
+        return "wide";
+    }
+    function inventoryFreshness() {
+        const syncedAt = Number(state.inventory?.syncedAt || 0);
+        if (!syncedAt) return { state: "Not updated", source: "Torn API", timestamp: "—", relative: "Never" };
+        const failures = Array.isArray(state.inventory?.failedCategories) ? state.inventory.failedCategories.length : 0;
+        const age = Math.max(0, Date.now() - syncedAt);
+        const label = state.error || failures ? "Partial" : age > 36 * 60 * 60 * 1000 ? "Stale" : "Fresh";
+        return { state: label, source: "Torn API", timestamp: formatUtcTimestamp(syncedAt), relative: formatRelative(syncedAt) };
+    }
+    function inventoryStatusRow() {
+        const freshness = inventoryFreshness();
+        const dateTime = state.inventory?.syncedAt ? new Date(state.inventory.syncedAt).toISOString() : "";
+        return "<div class='nic-tab-status' data-state='" + freshness.state.toLowerCase().replace(/\s+/g, "-") + "'><strong>" + freshness.state + "</strong><span>Inventory data · " + freshness.source + "</span><time datetime='" + dateTime + "'>" + freshness.timestamp + " · " + freshness.relative + "</time></div>";
+    }
     function runtimeInfo() {
         const viewport = presentationViewportMetrics();
         const scale = Number(window.visualViewport?.scale) || 1;
-        const viewportCompact = viewport.width <= 700 || viewport.height <= 520 || (scale > 1.1 && viewport.width <= 960);
+        const layout = layoutProfile();
+        const viewportCompact = layout === "narrow" || layout === "compact" || (scale > 1.1 && viewport.width <= 960);
         const compact = RUNTIME.isTornPDA || viewportCompact;
         const platform = RUNTIME.isTornPDA ? "TornPDA" : RUNTIME.nativeCheckComplete ? "Desktop" : "Checking TornPDA";
-        return { compact, mode: compact ? "compact" : "desktop", platform, label: platform + " / " + (compact ? "compact view" : "desktop view") };
+        const runtimeKind = RUNTIME.isTornPDA ? "tornpda" : RUNTIME.nativeCheckComplete ? "desktop" : "checking";
+        return { compact, mode: compact ? "compact" : "desktop", layout, runtimeKind, platform, label: platform + " / " + layout + " layout" };
     }
     function isCompactRuntime() {
         return runtimeInfo().compact;
@@ -1443,6 +1511,8 @@
         if (!dashboard) return runtimeInfo();
         const runtime = runtimeInfo();
         dashboard.dataset.runtime = runtime.mode;
+        dashboard.dataset.runtimeKind = runtime.runtimeKind;
+        dashboard.dataset.layoutProfile = runtime.layout;
         dashboard.dataset.platform = runtime.platform.toLowerCase().replace(/[^a-z]+/g, "-");
         return runtime;
     }
@@ -1640,9 +1710,10 @@
             start: activeElement.selectionStart,
             end: activeElement.selectionEnd
         } : null;
-        const body = state.activeTab === "settings" ? settingsView() :
-            "<div class='nic-topline'><span>" + escapeHtml(state.status) + "</span><button data-action='refresh' " +
-            (state.refreshInFlight || !state.apiKey ? "disabled" : "") + ">↻ " + (state.refreshInFlight ? "Refreshing…" : "Refresh") +
+        const statusRow = inventoryStatusRow();
+        const body = state.activeTab === "settings" ? statusRow + settingsView() :
+            statusRow + "<div class='nic-topline'><span class='nic-activity'>" + escapeHtml(state.status) + "</span><button data-action='refresh' " +
+            (state.refreshInFlight || !state.apiKey ? "disabled" : "") + ">↻ " + (state.refreshInFlight ? "Refreshing inventory…" : "Refresh inventory") +
             "</button><button data-tab='settings' title='Settings'>⚙</button></div>" +
             (state.error ? "<div class='nic-error'>" + escapeHtml(state.error) + "</div>" : "") + inventoryView();
         content.innerHTML = body;
@@ -1664,7 +1735,7 @@
             state.status = state.apiKey ? (state.apiKeySource === "tornpda" ? "TornPDA injected API key is active." : "API key saved. Inventory refresh is manual-only.") : "Manual refresh only.";
             state.error = "";
             void persistValues({ [STORAGE.key]: state.savedApiKey });
-            nativeToast(state.status, "green");
+            showToast(state.status, "green");
             render();
         });
         content.querySelector("[data-action='toggle-theme']")?.addEventListener("click", () => {
@@ -1676,20 +1747,20 @@
             state.inventory = null;
             void deletePersistedValues([STORAGE.inventory]);
             state.status = "Cached inventory cleared.";
-            nativeToast(state.status, "blue");
+            showToast(state.status, "blue");
             render();
         });
         content.querySelector("#nic-use-legacy-gm")?.addEventListener("change", (event) => {
             void setLegacyStoragePreference(event.target.checked).then(() => {
                 state.status = event.target.checked ? "Legacy GM storage selected." : "Preferred storage method restored.";
-                nativeToast(state.status, "blue");
+                showToast(state.status, "blue");
                 render();
             });
         });
         content.querySelector("[data-action='native-reminder']")?.addEventListener("click", () => {
             void scheduleNativeReminder().then(() => {
                 state.status = "Native inventory reminder scheduled for tomorrow.";
-                nativeToast(state.status, "green");
+                showToast(state.status, "green");
                 render();
             }).catch(() => {
                 state.status = "Native reminders are available in TornPDA.";
@@ -1705,7 +1776,7 @@
             void loadBackupFile(file).catch((error) => {
                 state.error = error?.message || "Unable to restore that backup.";
                 state.status = "Backup restore failed.";
-                nativeToast(state.status, "red");
+                showToast(state.status, "red");
                 render();
             });
         });
@@ -1878,10 +1949,11 @@
                 presentationViewportMetrics();
                 if (KEYBOARD_VIEWPORT_GUARD.active && keyboardViewportGuardIsEngaged() && isCompactRuntime()) return;
                 const priorMode = dashboard.dataset.runtime;
+                const priorProfile = dashboard.dataset.layoutProfile;
                 applyRuntimePresentation();
                 applySize();
                 applyCompactDetailLayout();
-                if (priorMode !== dashboard.dataset.runtime) render();
+                if (priorMode !== dashboard.dataset.runtime || priorProfile !== dashboard.dataset.layoutProfile || state.activeTab === "settings") render();
                 else if (!isCompactRuntime()) saveSize();
             });
         };
@@ -1894,7 +1966,10 @@
     function initializeDashboard() {
         const dashboard = document.createElement("aside");
         dashboard.id = "nic-wrapper";
-        dashboard.dataset.runtime = runtimeInfo().mode;
+        const initialRuntime = runtimeInfo();
+        dashboard.dataset.runtime = initialRuntime.mode;
+        dashboard.dataset.runtimeKind = initialRuntime.runtimeKind;
+        dashboard.dataset.layoutProfile = initialRuntime.layout;
         dashboard.dataset.keyboard = "false";
         dashboard.innerHTML = `
             <style>
@@ -1980,6 +2055,7 @@
             <i class='nic-resize' data-corner='top-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-left' title='Resize this tab'></i><i class='nic-resize' data-corner='bottom-right' title='Resize this tab'></i>`;
         document.body.appendChild(dashboard);
         state.dashboard = dashboard;
+        standardFeedbackLayer();
         bindWindowControls();
         applyWidgetView();
         render();
